@@ -40,5 +40,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: release/*
+          path: |
+            release/*.dmg
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
           if-no-files-found: error

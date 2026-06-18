@@ -66,7 +66,11 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: release/*
+          path: |
+            release/*.dmg
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
           if-no-files-found: error
 
   release:
@@ -85,7 +89,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          mapfile -t files < <(find release-artifacts -type f)
+          mapfile -t files < <(find release-artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \))
           gh release view "$TAG" >/dev/null 2>&1 \
             && gh release upload "$TAG" "${files[@]}" --clobber \
             || gh release create "$TAG" "${files[@]}" --title "$TAG" --generate-notes
