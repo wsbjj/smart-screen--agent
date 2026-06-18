@@ -1,0 +1,18 @@
+export const channels = {
+  getApiKeyStatus: 'settings:get-api-key-status',
+  getSettings: 'settings:get-settings',
+  saveSettings: 'settings:save-settings',
+  fetchModels: 'settings:fetch-models',
+  saveApiKey: 'settings:save-api-key',
+  clearApiKey: 'settings:clear-api-key',
+  pickJobFile: 'files:pick-job-file',
+  pickResumeFiles: 'files:pick-resume-files',
+  pickResumeFolder: 'files:pick-resume-folder',
+  generateJobConfig: 'agents:generate-job-config',
+  runScreening: 'agents:run-screening',
+  screeningProgress: 'agents:screening-progress',
+  runMultiAgentScreening: 'agents:run-multi-agent-screening',
+  agentStatus: 'agents:agent-status',
+  exportCsv: 'export:csv',
+  exportXlsx: 'export:xlsx',
+} as const
