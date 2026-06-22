@@ -24,10 +24,6 @@ jobs:
             os: macos-26
             command: npm run package:mac:arm64
             artifact: macos-arm64-dmg
-          - name: Linux x64 AppImage and deb
-            os: ubuntu-latest
-            command: npm run package:linux
-            artifact: linux-x64
 
     steps:
       - uses: actions/checkout@v6
@@ -36,13 +32,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-
-      - name: Install Linux native dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsecret-1-dev
-          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
 
       - run: npm ci
 
@@ -54,8 +43,6 @@ jobs:
           path: |
             release/*.dmg
             release/*.exe
-            release/*.AppImage
-            release/*.deb
             release/*.blockmap
             release/latest*.yml
           if-no-files-found: error

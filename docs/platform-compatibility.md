@@ -96,14 +96,8 @@ app.on('window-all-closed', () => {
 
 - Windows 安装和运行
 - macOS arm64/x64
-- Linux CI 依赖，例如 `libsecret-1-dev` 和 AppImage 所需的 FUSE 2 runtime
+- Linux CI 依赖，例如 `libsecret-1-dev`
 - 打包后 ASAR 路径和 native 模块加载
-
-GitHub `ubuntu-latest` 可能指向 Ubuntu 24.04。Ubuntu 24.04 中 FUSE 2 包名通常是 `libfuse2t64`，较旧 Ubuntu 中通常是 `libfuse2`。CI 中需要保留 fallback：
-
-```bash
-sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
-```
 
 ## Packaging
 
@@ -111,7 +105,7 @@ sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
 
 - Windows: NSIS
 - macOS: DMG，arm64/x64 或 universal 策略
-- Linux: AppImage、deb 或项目选择的发行格式
+- Linux: 当前只做基础 CI 验证，暂不构建 Linux 安装包
 
 不要只在当前平台验证打包相关改动。
 

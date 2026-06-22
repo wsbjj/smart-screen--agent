@@ -17,7 +17,6 @@
     "package": "npm run build && electron-builder --publish never",
     "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "package:mac:arm64": "npm run build && electron-builder --mac dmg --arm64 --publish never",
-    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
