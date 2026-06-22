@@ -1,6 +1,6 @@
-import { dialog } from 'electron'
 import { readdir, readFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
+import { dialog } from './electronApi.js'
 import { extractTextFromFile } from '../src/core/documentParser.js'
 import type { ParsedDocument, ResumeDocument, SupportedExtension } from '../src/shared/types.js'
 

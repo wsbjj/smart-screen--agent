@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - '*'
   pull_request:
   workflow_dispatch:
 
@@ -14,7 +14,15 @@ permissions:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    name: Verify on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
     steps:
       - uses: actions/checkout@v6
 
@@ -23,7 +31,17 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev
+
       - run: npm ci
+
+      - run: npm run check:platform
+
+      - run: npm run check:release-version
 
       - run: npm run lint
 
@@ -50,6 +68,10 @@ jobs:
             os: macos-26
             command: npm run package:mac:arm64
             artifact: macos-arm64-dmg
+          - name: Linux x64 AppImage and deb
+            os: ubuntu-latest
+            command: npm run package:linux
+            artifact: linux-x64
 
     steps:
       - uses: actions/checkout@v6
@@ -58,6 +80,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev
 
       - run: npm ci
 
@@ -69,6 +97,8 @@ jobs:
           path: |
             release/*.dmg
             release/*.exe
+            release/*.AppImage
+            release/*.deb
             release/*.blockmap
             release/latest*.yml
           if-no-files-found: error
@@ -89,7 +119,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          mapfile -t files < <(find release-artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \))
+          mapfile -t files < <(find release-artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.blockmap' -o -name 'latest*.yml' \))
           gh release view "$TAG" >/dev/null 2>&1 \
             && gh release upload "$TAG" "${files[@]}" --clobber \
             || gh release create "$TAG" "${files[@]}" --title "$TAG" --generate-notes

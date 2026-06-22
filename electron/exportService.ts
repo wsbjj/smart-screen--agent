@@ -1,5 +1,5 @@
-import { dialog } from 'electron'
 import { writeFile } from 'node:fs/promises'
+import { dialog } from './electronApi.js'
 import { exportScorecardsToCsv, exportScorecardsToWorkbookBuffer } from '../src/core/exporter.js'
 import type { CandidateScorecard } from '../src/shared/types.js'
 

@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { channels } from './channels.js'
+import { app, BrowserWindow, ipcMain } from './electronApi.js'
 import { clearApiKey, getApiKey, hasApiKey, saveApiKey } from './secureSettings.js'
 import { pickAndParseJobFile, pickAndParseResumeFiles, pickAndParseResumeFolder } from './fileService.js'
 import { exportCsv, exportXlsx } from './exportService.js'

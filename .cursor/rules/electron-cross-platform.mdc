@@ -1,0 +1,27 @@
+---
+description: Cross-platform Electron compatibility rules for Windows, macOS, and Linux
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Cross-Platform Electron Rules
+
+This project is an Electron desktop app that must support Windows, macOS, and Linux.
+
+Before editing npm scripts, Electron main-process code, file paths, native modules, packaging, or CI, read:
+
+`docs/platform-compatibility.md`
+
+Required behavior:
+
+- Keep npm scripts cross-platform. Do not use POSIX-only syntax like `VAR=value command`.
+- Use Node scripts instead of shell-specific commands for env setup, copy/delete operations, and process spawning.
+- Use `node:path`; do not build paths by concatenating `/` or `\`.
+- Do not hardcode `/Users`, `/tmp`, Windows drive letters, or backslash-only paths.
+- Preserve the Electron API bridge pattern in `electron/electronApi.ts`.
+- Delete `ELECTRON_RUN_AS_NODE` before spawning Electron app processes.
+- Release git tags must exactly match `package.json` `version`; do not add a leading `v`.
+- Consider case-sensitive file systems when importing files.
+- For any `process.platform` branch, account for `win32`, `darwin`, and Linux behavior.
+- Run `npm run check:platform`, `npm run check:release-version`, `npm run lint`, `npm test`, and `npm run build` before claiming compatibility.

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const showOpenDialog = vi.fn()
 
-vi.mock('electron', () => ({
+vi.mock('./electronApi.js', () => ({
   dialog: {
     showOpenDialog,
   },
