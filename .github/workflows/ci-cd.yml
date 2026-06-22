@@ -36,6 +36,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsecret-1-dev
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
 
       - run: npm ci
 
@@ -86,6 +87,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsecret-1-dev
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
 
       - run: npm ci
 
