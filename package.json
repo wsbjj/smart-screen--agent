@@ -1,7 +1,7 @@
 {
   "name": "smart-screen--agent",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Desktop resume screening agent",
   "author": "wsbjj",
   "type": "module",
@@ -61,8 +61,8 @@
   },
   "build": {
     "appId": "com.wsbjj.smartscreenagent",
-    "productName": "Smart Screen Agent",
-    "artifactName": "Smart-Screen-Agent-${version}-${os}-${arch}.${ext}",
+    "productName": "简历筛选助手",
+    "artifactName": "简历筛选助手-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },

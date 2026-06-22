@@ -26,7 +26,7 @@ async function createWindow() {
     height: 840,
     minWidth: 1040,
     minHeight: 720,
-    title: 'Smart Screen Agent',
+    title: '简历筛选助手',
     backgroundColor: '#f6f3ec',
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),

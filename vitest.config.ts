@@ -7,6 +7,6 @@ export default defineConfig({
     environment: 'node',
     globals: true,
     setupFiles: ['src/test/setup.ts'],
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'electron/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'electron/**/*.test.ts', 'vite.config.test.ts'],
   },
 })
