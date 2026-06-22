@@ -157,4 +157,4 @@ npm run build
 npm run dev
 ```
 
-CI 必须在 Windows、macOS、Linux 上运行基础验证。
+CI 当前只在 Windows 和 macOS 上运行基础验证。Linux 暂无构建需求，后续需要时再恢复 Ubuntu 验证或 Linux 安装包构建。

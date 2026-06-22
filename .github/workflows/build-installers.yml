@@ -2,12 +2,32 @@ name: Build installers
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - '*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  verify-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run check:platform
+
+      - run: npm run check:release-version
+
   build:
+    needs: verify-release
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     env:
@@ -46,3 +66,24 @@ jobs:
             release/*.blockmap
             release/latest*.yml
           if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mapfile -t files < <(find release-artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \))
+          gh release view "$TAG" >/dev/null 2>&1 \
+            && gh release upload "$TAG" "${files[@]}" --clobber \
+            || gh release create "$TAG" "${files[@]}" --title "$TAG" --generate-notes
