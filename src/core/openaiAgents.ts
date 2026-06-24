@@ -1,8 +1,14 @@
 import { Agent, OpenAIProvider, Runner, run, setDefaultOpenAIKey } from '@openai/agents'
 import type { AgentOutputType } from '@openai/agents'
 import type { z } from 'zod'
-import { candidateScorecardSchema, jobAgentConfigSchema, routingOutputSchema } from '../shared/schemas.js'
+import {
+  candidateScorecardSchema,
+  jobAgentConfigSchema,
+  routingBatchOutputSchema,
+  routingOutputSchema,
+} from '../shared/schemas.js'
 import type {
+  BatchLlmRouterFn,
   CandidateScorecard,
   GeneratedJobConfigInput,
   JobAgentConfig,
@@ -21,6 +27,7 @@ export type OpenAIRunnerOptions = {
 type JobAgentConfigOutput = z.infer<typeof jobAgentConfigSchema>
 type CandidateScorecardOutput = z.infer<typeof candidateScorecardSchema>
 type RoutingOutput = z.infer<typeof routingOutputSchema>
+type RoutingBatchOutput = z.infer<typeof routingBatchOutputSchema>
 
 function ensureOpenAIKey(apiKey: string) {
   if (!apiKey.trim()) {
@@ -189,5 +196,40 @@ export function createLlmRouterFn(options: OpenAIRunnerOptions): LlmRouterFn {
     if (!output) throw new Error('LLM router returned no output')
     const parsed = routingOutputSchema.parse(output)
     return parsed.agentId
+  }
+}
+
+export function createBatchLlmRouterFn(options: OpenAIRunnerOptions): BatchLlmRouterFn {
+  ensureOpenAIKey(options.apiKey)
+
+  return async (items, agents) => {
+    if (items.length === 0) {
+      return []
+    }
+
+    const agentList = agents.map((a) => ({ id: a.id, title: a.title, summary: a.summary }))
+    const agent = new Agent({
+      name: '批量简历分拣员',
+      model: options.model,
+      outputType: routingBatchOutputSchema,
+      instructions: [
+        '你是简历分拣员。根据每份简历摘要，从给定岗位列表中为每份简历选出最匹配的一个岗位。',
+        '必须返回 decisions 数组；每个元素包含 resumeId、agentId 和 reasoning。',
+        'agentId 必须来自给定岗位列表，不要输出任何其他内容。',
+      ].join('\n'),
+    })
+
+    const result = await runWithProvider(
+      agent,
+      JSON.stringify({ resumes: items, agents: agentList }),
+      options,
+    )
+    const output = result.finalOutput as RoutingBatchOutput | undefined
+    if (!output) throw new Error('Batch LLM router returned no output')
+    const parsed = routingBatchOutputSchema.parse(output)
+    return parsed.decisions.map((decision) => ({
+      resumeId: decision.resumeId,
+      agentId: decision.agentId,
+    }))
   }
 }

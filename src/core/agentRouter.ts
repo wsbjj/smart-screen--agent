@@ -1,4 +1,5 @@
 import type {
+  FilenameRouteAlias,
   JobAgentConfig,
   LlmRouterFn,
   ResumeDocument,
@@ -26,12 +27,19 @@ function normalizeForMatch(text: string): string {
 }
 
 const filenameAliasesByAgentId: Record<string, string[]> = {
-  'hanlin-brand-visual-design': ['电商AI美工', '电商美工', 'AI美工', '美工'],
+  'hanlin-ai-agent-builder': ['AI智能体', '智能体搭建', 'Agent技术员', 'AI Agent技术员', '智能体技术员'],
+  'hanlin-product-manager-sports-protection': ['产品经理', '产品经理人', '运动护具产品经理', '护具产品经理'],
+  'hanlin-brand-development-sports-protection': ['品牌开发', '品牌开发专员', '品牌专员', '运动护具品牌'],
+  'hanlin-brand-visual-design': ['电商AI美工', '电商美工', 'AI美工', '美工', '品牌视觉', '视觉设计'],
+  'hanlin-independent-site-operator': ['独立站运营', '跨境独立站', 'Shopify', 'shopify运营', '独立站'],
+  'hanlin-amazon-product-manager': ['亚马逊产品经理', 'Amazon产品经理', '亚马逊选品', '选品'],
+  'hanlin-amazon-operator': ['亚马逊运营', 'Amazon运营', 'amazon运营', '亚马逊运营专员', '跨境亚马逊运营'],
 }
 
 export function matchByFilename(
   fileName: string,
   agents: JobAgentConfig[],
+  customAliases: FilenameRouteAlias[] = [],
 ): RouterDecision | null {
   const baseName = normalizeForMatch(stripExtension(fileName))
   if (!baseName) return null
@@ -53,11 +61,32 @@ export function matchByFilename(
   }
 
   if (!bestAgent) {
-    for (const agent of agents) {
-      const aliases = filenameAliasesByAgentId[agent.id] ?? []
-      if (aliases.some((alias) => baseName.includes(normalizeForMatch(alias)))) {
+    let bestAliasPriority = -1
+    for (const [agentId, aliases] of Object.entries(filenameAliasesByAgentId)) {
+      for (const alias of aliases) {
+        const aliasNorm = normalizeForMatch(alias)
+        const agent = agents.find((item) => item.id === agentId)
+        if (!aliasNorm || !agent || !baseName.includes(aliasNorm)) continue
+        if (aliasNorm.length > bestMatchLength) {
+          bestMatchLength = aliasNorm.length
+          bestAliasPriority = 0
+          bestAgent = agent
+        }
+      }
+    }
+
+    for (const alias of customAliases) {
+      const aliasNorm = normalizeForMatch(alias.pattern)
+      const agent = agents.find((item) => item.id === alias.agentId)
+      if (!aliasNorm || !agent || !baseName.includes(aliasNorm)) continue
+      const aliasPriority = 1
+      if (
+        aliasNorm.length > bestMatchLength ||
+        (aliasNorm.length === bestMatchLength && aliasPriority >= bestAliasPriority)
+      ) {
+        bestMatchLength = aliasNorm.length
+        bestAliasPriority = aliasPriority
         bestAgent = agent
-        break
       }
     }
   }
@@ -120,13 +149,13 @@ export function matchByNlp(
   }
 }
 
-export function createAgentRouter(options: {
+export function createLocalRouter(options: {
+  filenameAliases?: FilenameRouteAlias[]
   nlpThreshold?: number
-  llmFn?: LlmRouterFn
-}) {
-  const { nlpThreshold = 0.25, llmFn } = options
+} = {}) {
+  const { filenameAliases = [], nlpThreshold = 0.25 } = options
 
-  return async (resume: ResumeDocument, agents: JobAgentConfig[]): Promise<RouterDecision> => {
+  return (resume: ResumeDocument, agents: JobAgentConfig[]): RouterDecision | null => {
     if (agents.length === 0) {
       throw new Error('No agents provided to router')
     }
@@ -134,16 +163,32 @@ export function createAgentRouter(options: {
       return { resumeId: resume.id, agentId: agents[0].id, layer: 'fallback', confidence: 1 }
     }
 
-    // Layer 1: filename match
-    const byFilename = matchByFilename(resume.fileName, agents)
+    const byFilename = matchByFilename(resume.fileName, agents, filenameAliases)
     if (byFilename) {
       return { ...byFilename, resumeId: resume.id }
     }
 
-    // Layer 2: NLP keyword overlap
     const byNlp = matchByNlp(resume, agents, nlpThreshold)
     if (byNlp) {
       return { ...byNlp, resumeId: resume.id }
+    }
+
+    return null
+  }
+}
+
+export function createAgentRouter(options: {
+  filenameAliases?: FilenameRouteAlias[]
+  nlpThreshold?: number
+  llmFn?: LlmRouterFn
+}) {
+  const { filenameAliases = [], nlpThreshold = 0.25, llmFn } = options
+  const localRouter = createLocalRouter({ filenameAliases, nlpThreshold })
+
+  return async (resume: ResumeDocument, agents: JobAgentConfig[]): Promise<RouterDecision> => {
+    const byLocal = localRouter(resume, agents)
+    if (byLocal) {
+      return byLocal
     }
 
     // Layer 3: LLM

@@ -83,7 +83,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          mapfile -t files < <(find release-artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \))
+          files=()
+          while IFS= read -r file; do
+            name="$(basename "$file")"
+            case "$name" in
+              jianli-shaixuan-zhushou-*)
+                label="简历筛选助手-${name#jianli-shaixuan-zhushou-}"
+                files+=("${file}#${label}")
+                ;;
+              *)
+                files+=("$file")
+                ;;
+            esac
+          done < <(find release-artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \) | sort)
           gh release view "$TAG" >/dev/null 2>&1 \
             && gh release upload "$TAG" "${files[@]}" --clobber \
             || gh release create "$TAG" "${files[@]}" --title "$TAG" --generate-notes

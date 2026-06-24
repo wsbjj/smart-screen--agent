@@ -18,6 +18,7 @@ function summaryRows(scorecards: CandidateScorecard[]) {
     排名: index + 1,
     候选人: scorecard.candidateName,
     文件名: scorecard.fileName,
+    '岗位 Agent': scorecard.jobAgentTitle ?? '',
     总分: scorecard.overallScore,
     推荐等级: scorecard.recommendation,
     亮点: joinList(scorecard.strengths),
@@ -44,7 +45,7 @@ function detailRows(scorecards: CandidateScorecard[]) {
 
 export function exportScorecardsToCsv(scorecards: CandidateScorecard[]): string {
   const rows = summaryRows(scorecards)
-  const headers = ['排名', '候选人', '文件名', '总分', '推荐等级', '亮点', '缺失项', '风险点', '证据摘要', '复核建议']
+  const headers = ['排名', '候选人', '文件名', '岗位 Agent', '总分', '推荐等级', '亮点', '缺失项', '风险点', '证据摘要', '复核建议']
 
   return [
     headers.join(','),
@@ -68,6 +69,7 @@ export async function exportScorecardsToWorkbookBuffer(scorecards: CandidateScor
     { header: '排名', key: '排名', width: 8 },
     { header: '候选人', key: '候选人', width: 18 },
     { header: '文件名', key: '文件名', width: 26 },
+    { header: '岗位 Agent', key: '岗位 Agent', width: 24 },
     { header: '总分', key: '总分', width: 10 },
     { header: '推荐等级', key: '推荐等级', width: 14 },
     { header: '亮点', key: '亮点', width: 36 },

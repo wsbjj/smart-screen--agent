@@ -1,5 +1,5 @@
 import type { DesktopApi } from '../src/shared/desktopApi.js'
-import type { AgentStatusEvent, ScreeningProgressEvent } from '../src/shared/types.js'
+import type { AgentStatusEvent, ResumeImportProgressEvent, ScreeningProgressEvent } from '../src/shared/types.js'
 
 const { contextBridge, ipcRenderer } = require('electron') as typeof import('electron')
 
@@ -13,10 +13,15 @@ const channels = {
   pickJobFile: 'files:pick-job-file',
   pickResumeFiles: 'files:pick-resume-files',
   pickResumeFolder: 'files:pick-resume-folder',
+  resumeImportProgress: 'files:resume-import-progress',
+  cancelResumeImport: 'files:cancel-resume-import',
+  clearResumeImportCache: 'files:clear-resume-import-cache',
+  loadCachedResumes: 'files:load-cached-resumes',
   generateJobConfig: 'agents:generate-job-config',
   runScreening: 'agents:run-screening',
   screeningProgress: 'agents:screening-progress',
   runMultiAgentScreening: 'agents:run-multi-agent-screening',
+  cancelScreening: 'agents:cancel-screening',
   agentStatus: 'agents:agent-status',
   exportCsv: 'export:csv',
   exportXlsx: 'export:xlsx',
@@ -35,11 +40,20 @@ const api: DesktopApi = {
     pickJobFile: () => ipcRenderer.invoke(channels.pickJobFile),
     pickResumeFiles: () => ipcRenderer.invoke(channels.pickResumeFiles),
     pickResumeFolder: () => ipcRenderer.invoke(channels.pickResumeFolder),
+    onResumeImportProgress: (listener) => {
+      const wrapped = (_event: unknown, progress: ResumeImportProgressEvent) => listener(progress)
+      ipcRenderer.on(channels.resumeImportProgress, wrapped)
+      return () => ipcRenderer.removeListener(channels.resumeImportProgress, wrapped)
+    },
+    cancelResumeImport: (sessionId) => ipcRenderer.invoke(channels.cancelResumeImport, sessionId),
+    clearResumeImportCache: (sessionIds) => ipcRenderer.invoke(channels.clearResumeImportCache, sessionIds),
+    loadCachedResumes: (items) => ipcRenderer.invoke(channels.loadCachedResumes, items),
   },
   agents: {
     generateJobConfig: (payload) => ipcRenderer.invoke(channels.generateJobConfig, payload),
     runScreening: (payload) => ipcRenderer.invoke(channels.runScreening, payload),
     runMultiAgentScreening: (payload) => ipcRenderer.invoke(channels.runMultiAgentScreening, payload),
+    cancelScreening: () => ipcRenderer.invoke(channels.cancelScreening),
     onScreeningProgress: (listener) => {
       const wrapped = (_event: unknown, progress: ScreeningProgressEvent) => listener(progress)
       ipcRenderer.on(channels.screeningProgress, wrapped)

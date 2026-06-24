@@ -30,6 +30,14 @@ export type JobAgentConfig = {
   }
 }
 
+export type RoutingMode = 'hybrid' | 'local_only'
+
+export type FilenameRouteAlias = {
+  id: string
+  pattern: string
+  agentId: string
+}
+
 export type FileExtractionInput = {
   name: string
   extension: string
@@ -47,6 +55,42 @@ export type ResumeDocument = ParsedDocument & {
   id: string
 }
 
+export type ImportedResumeSummary = {
+  id: string
+  fileName: string
+  extension: SupportedExtension
+  wordCount: number
+  preview: string
+  sessionId: string
+  cacheKey: string
+}
+
+export type ResumeImportError = {
+  fileName: string
+  message: string
+}
+
+export type ResumeImportProgressEvent = {
+  sessionId: string
+  status: 'started' | 'scanning' | 'progress' | 'completed' | 'cancelled'
+  processed: number
+  total: number
+  cached: number
+  failed: number
+  currentFileName?: string
+  batch?: ImportedResumeSummary[]
+  errors?: ResumeImportError[]
+}
+
+export type ResumeImportResult = {
+  sessionId: string
+  resumes: ImportedResumeSummary[]
+  errors: ResumeImportError[]
+  cancelled: boolean
+}
+
+export type ResumeScreeningInput = ResumeDocument | ImportedResumeSummary
+
 export type CriterionScore = {
   criterionId: string
   label: string
@@ -60,6 +104,8 @@ export type CandidateScorecard = {
   resumeId: string
   fileName: string
   candidateName: string
+  jobAgentId?: string
+  jobAgentTitle?: string
   overallScore: number
   recommendation: Recommendation
   criterionScores: CriterionScore[]
@@ -82,11 +128,14 @@ export type ScreeningBatchResult = {
 }
 
 export type ScreeningProgressEvent = {
-  status: 'started' | 'completed' | 'failed'
+  status: 'routing' | 'started' | 'completed' | 'failed'
+  phase?: 'routing' | 'screening'
   resumeId: string
   fileName: string
   completed: number
   total: number
+  started?: number
+  active?: number
   agentId?: string
 }
 
@@ -105,6 +154,7 @@ export type ScreeningBatchOptions = {
   runner: ScreeningAgentRunner
   concurrency?: number
   maxRetries?: number
+  signal?: AbortSignal
   onProgress?: (event: ScreeningProgressEvent) => void
 }
 
@@ -133,13 +183,53 @@ export type AgentStatusEvent = {
 
 export type LlmRouterFn = (resumeExcerpt: string, agents: JobAgentConfig[]) => Promise<string>
 
+export type LocalRouterFn = (
+  resume: ResumeDocument,
+  agents: JobAgentConfig[],
+) => RouterDecision | null
+
+export type BatchLlmRouterItem = {
+  resumeId: string
+  excerpt: string
+}
+
+export type BatchLlmRouterDecision = {
+  resumeId: string
+  agentId: string
+}
+
+export type BatchLlmRouterFn = (
+  items: BatchLlmRouterItem[],
+  agents: JobAgentConfig[],
+) => Promise<BatchLlmRouterDecision[]>
+
+export type RoutingDecisionCache = {
+  get: (
+    resume: ResumeDocument,
+    agents: JobAgentConfig[],
+  ) => Promise<RouterDecision | null> | RouterDecision | null
+  set: (
+    resume: ResumeDocument,
+    agents: JobAgentConfig[],
+    decision: RouterDecision,
+  ) => Promise<void> | void
+}
+
 export type MultiAgentBatchOptions = {
   agents: JobAgentConfig[]
   resumes: ResumeDocument[]
-  routerFn: (resume: ResumeDocument, agents: JobAgentConfig[]) => Promise<RouterDecision>
+  routerFn?: (resume: ResumeDocument, agents: JobAgentConfig[]) => Promise<RouterDecision>
+  localRouterFn?: LocalRouterFn
+  batchRouterFn?: BatchLlmRouterFn
+  routingMode?: RoutingMode
   runner: ScreeningAgentRunner
   concurrency?: number
+  routingConcurrency?: number
+  llmRoutingConcurrency?: number
+  routingBatchSize?: number
+  routeCache?: RoutingDecisionCache
   maxRetries?: number
+  signal?: AbortSignal
   onProgress?: (event: ScreeningProgressEvent) => void
   onAgentStatus?: (event: AgentStatusEvent) => void
 }

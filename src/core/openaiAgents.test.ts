@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createScreeningAgentRunner, generateJobAgentConfig } from './openaiAgents.js'
+import { createBatchLlmRouterFn, createScreeningAgentRunner, generateJobAgentConfig } from './openaiAgents.js'
 import type { JobAgentConfig, ResumeDocument } from '../shared/types.js'
 
 const runMock = vi.hoisted(() => vi.fn())
@@ -246,5 +246,47 @@ describe('OpenAI agent runners', () => {
 
     expect(runnerRunMock.mock.calls[0]?.[2]).toEqual({ stream: true })
     expect(runnerRunMock.mock.calls[1]?.[2]).toBeUndefined()
+  })
+
+  it('routes multiple resume excerpts in one structured LLM request', async () => {
+    runMock.mockResolvedValue(
+      makeStreamedResult({
+        decisions: [
+          { resumeId: 'resume-1', agentId: 'job-1', reasoning: 'React evidence' },
+          { resumeId: 'resume-2', agentId: 'job-2', reasoning: 'Operations evidence' },
+        ],
+      }),
+    )
+    const secondJob: JobAgentConfig = {
+      ...jobConfig,
+      id: 'job-2',
+      title: '运营专员',
+      summary: '负责跨境电商运营',
+    }
+
+    const router = createBatchLlmRouterFn({ apiKey: 'sk-test', model: 'gpt-5.2' })
+
+    await expect(
+      router(
+        [
+          { resumeId: 'resume-1', excerpt: '候选人具备 React TypeScript 项目经验' },
+          { resumeId: 'resume-2', excerpt: '候选人负责亚马逊 Listing 和广告投放' },
+        ],
+        [jobConfig, secondJob],
+      ),
+    ).resolves.toEqual([
+      { resumeId: 'resume-1', agentId: 'job-1' },
+      { resumeId: 'resume-2', agentId: 'job-2' },
+    ])
+
+    const request = JSON.parse(runMock.mock.calls[0]?.[1] as string)
+    expect(request.resumes).toEqual([
+      { resumeId: 'resume-1', excerpt: '候选人具备 React TypeScript 项目经验' },
+      { resumeId: 'resume-2', excerpt: '候选人负责亚马逊 Listing 和广告投放' },
+    ])
+    expect(request.agents).toEqual([
+      { id: 'job-1', title: '前端工程师', summary: '负责桌面端产品开发' },
+      { id: 'job-2', title: '运营专员', summary: '负责跨境电商运营' },
+    ])
   })
 })
