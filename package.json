@@ -62,7 +62,7 @@
   "build": {
     "appId": "com.wsbjj.smartscreenagent",
     "productName": "简历筛选助手",
-    "artifactName": "简历筛选助手-${version}-${os}-${arch}.${ext}",
+    "artifactName": "jianli-shaixuan-zhushou-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },
