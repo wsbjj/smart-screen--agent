@@ -1,10 +1,17 @@
 /* @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App.js'
 import type { DesktopApi } from './shared/desktopApi.js'
-import type { ResumeDocument } from './shared/types.js'
+import type {
+  CandidateScorecard,
+  ImportedResumeSummary,
+  ResumeDocument,
+  ResumeImportProgressEvent,
+  ScreeningBatchResult,
+  ScreeningProgressEvent,
+} from './shared/types.js'
 
 describe('App smoke flow', () => {
   afterEach(() => {
@@ -19,11 +26,40 @@ describe('App smoke flow', () => {
     export?: Partial<DesktopApi['export']>
   }
 
+  const defaultSettings = {
+    model: 'gpt-5.2',
+    baseUrl: '',
+    routingMode: 'hybrid' as const,
+    filenameAliases: [],
+    llmRoutingConcurrency: 10,
+  }
+
+  function toImportedResume(resume: ResumeDocument, sessionId = 'test-session'): ImportedResumeSummary {
+    return {
+      id: resume.id,
+      fileName: resume.fileName,
+      extension: resume.extension,
+      wordCount: resume.wordCount,
+      preview: resume.text.slice(0, 150),
+      sessionId,
+      cacheKey: resume.id,
+    }
+  }
+
+  function importResult(resumes: ResumeDocument[], sessionId = 'test-session') {
+    return {
+      sessionId,
+      resumes: resumes.map((resume) => toImportedResume(resume, sessionId)),
+      errors: [],
+      cancelled: false,
+    }
+  }
+
   function createDesktopApiMock(overrides: DesktopApiMockOverrides = {}): DesktopApi {
     return {
       settings: {
         hasApiKey: vi.fn().mockResolvedValue(false),
-        getSettings: vi.fn().mockResolvedValue({ model: 'gpt-5.2', baseUrl: '' }),
+        getSettings: vi.fn().mockResolvedValue(defaultSettings),
         saveSettings: vi.fn().mockImplementation(async (settings) => settings),
         fetchModels: vi.fn().mockResolvedValue([]),
         saveApiKey: vi.fn().mockResolvedValue(undefined),
@@ -32,14 +68,27 @@ describe('App smoke flow', () => {
       },
       files: {
         pickJobFile: vi.fn().mockResolvedValue(null),
-        pickResumeFiles: vi.fn().mockResolvedValue({ resumes: [], errors: [] }),
-        pickResumeFolder: vi.fn().mockResolvedValue({ resumes: [], errors: [] }),
+        pickResumeFiles: vi.fn().mockResolvedValue({ sessionId: '', resumes: [], errors: [], cancelled: false }),
+        pickResumeFolder: vi.fn().mockResolvedValue({ sessionId: '', resumes: [], errors: [], cancelled: false }),
+        onResumeImportProgress: vi.fn().mockReturnValue(() => undefined),
+        cancelResumeImport: vi.fn().mockResolvedValue(undefined),
+        clearResumeImportCache: vi.fn().mockResolvedValue(undefined),
+        loadCachedResumes: vi.fn(async (items: ImportedResumeSummary[]) =>
+          items.map((item) => ({
+            id: item.id,
+            fileName: item.fileName,
+            extension: item.extension,
+            text: item.preview,
+            wordCount: item.wordCount,
+          })),
+        ),
         ...overrides.files,
       },
       agents: {
         generateJobConfig: vi.fn(),
         runScreening: vi.fn(),
         runMultiAgentScreening: vi.fn().mockResolvedValue({ scorecards: [], errors: [] }),
+        cancelScreening: vi.fn().mockResolvedValue(false),
         onScreeningProgress: vi.fn().mockReturnValue(() => undefined),
         onAgentStatus: vi.fn().mockReturnValue(() => undefined),
         ...overrides.agents,
@@ -79,6 +128,179 @@ describe('App smoke flow', () => {
     expect(screen.getByText('桌面端桥接未加载，请重启应用或重新构建')).toBeInTheDocument()
   })
 
+  it('saves routing optimization settings with filename aliases and LLM concurrency', async () => {
+    const user = userEvent.setup()
+    const saveSettings = vi.fn().mockImplementation(async (settings) => settings)
+    window.desktopApi = createDesktopApiMock({
+      settings: {
+        saveSettings,
+      },
+    })
+
+    render(<App />)
+
+    await waitFor(() => expect(window.desktopApi!.settings.getSettings).toHaveBeenCalled())
+    await user.selectOptions(screen.getByLabelText('路由模式'), 'local_only')
+    await user.clear(screen.getByLabelText('LLM 分配并发'))
+    await user.type(screen.getByLabelText('LLM 分配并发'), '20')
+    await user.click(screen.getByRole('button', { name: '新增映射' }))
+    await user.type(screen.getByLabelText('文件名映射关键词 1'), '亚马逊运营')
+    await user.selectOptions(screen.getByLabelText('文件名映射目标 1'), 'hanlin-amazon-operator')
+    await user.click(screen.getByRole('button', { name: '保存设置' }))
+
+    expect(saveSettings).toHaveBeenCalledWith({
+      model: 'gpt-5.2',
+      baseUrl: '',
+      routingMode: 'local_only',
+      llmRoutingConcurrency: 20,
+      filenameAliases: [
+        expect.objectContaining({
+          pattern: '亚马逊运营',
+          agentId: 'hanlin-amazon-operator',
+        }),
+      ],
+    })
+  })
+
+  it('shows live resume import progress and appends imported batches', async () => {
+    const user = userEvent.setup()
+    const resume: ResumeDocument = {
+      id: 'resume-progress-1',
+      fileName: '候选人A.txt',
+      extension: '.txt',
+      text: '候选人A React TypeScript Electron',
+      wordCount: 4,
+    }
+    const summary = toImportedResume(resume, 'import-session-a')
+    let importListener: ((event: ResumeImportProgressEvent) => void) | undefined
+    let resolveImport: ((result: ReturnType<typeof importResult>) => void) | undefined
+    window.desktopApi = createDesktopApiMock({
+      files: {
+        pickResumeFiles: vi.fn().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveImport = resolve
+            }),
+        ),
+        onResumeImportProgress: vi.fn((listener) => {
+          importListener = listener
+          return () => undefined
+        }),
+      },
+    })
+
+    render(<App />)
+    await waitFor(() => expect(window.desktopApi!.files.onResumeImportProgress).toHaveBeenCalled())
+
+    await user.click(screen.getByRole('button', { name: /简历导入/ }))
+    await user.click(screen.getByRole('button', { name: '选择多份简历' }))
+
+    act(() => {
+      importListener?.({
+        sessionId: 'import-session-a',
+        status: 'started',
+        processed: 0,
+        total: 2,
+        cached: 0,
+        failed: 0,
+      })
+      importListener?.({
+        sessionId: 'import-session-a',
+        status: 'progress',
+        processed: 1,
+        total: 2,
+        cached: 1,
+        failed: 0,
+        currentFileName: '候选人A.txt',
+        batch: [summary],
+      })
+    })
+
+    expect(await screen.findByRole('progressbar', { name: '简历导入进度' })).toHaveAttribute('max', '2')
+    expect(screen.getByText('已解析 1 / 2')).toBeInTheDocument()
+    expect(screen.getByText('正在处理：候选人A.txt')).toBeInTheDocument()
+    expect(screen.getByText('成功 1，失败 0')).toBeInTheDocument()
+    expect(screen.getByText('候选人A.txt')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /03 简历导入 1 份/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '开始筛选' })).toBeDisabled()
+
+    await act(async () => {
+      resolveImport?.({
+        sessionId: 'import-session-a',
+        resumes: [summary],
+        errors: [],
+        cancelled: false,
+      })
+    })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '开始筛选' })).toBeEnabled())
+  })
+
+  it('cancels an active resume import and removes the current session summaries', async () => {
+    const user = userEvent.setup()
+    const resume: ResumeDocument = {
+      id: 'resume-cancel-1',
+      fileName: '待取消候选人.txt',
+      extension: '.txt',
+      text: 'React TypeScript',
+      wordCount: 2,
+    }
+    const summary = toImportedResume(resume, 'cancel-session')
+    let importListener: ((event: ResumeImportProgressEvent) => void) | undefined
+    let resolveImport: ((result: ReturnType<typeof importResult>) => void) | undefined
+    const cancelResumeImport = vi.fn().mockResolvedValue(undefined)
+    window.desktopApi = createDesktopApiMock({
+      files: {
+        pickResumeFiles: vi.fn().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveImport = resolve
+            }),
+        ),
+        onResumeImportProgress: vi.fn((listener) => {
+          importListener = listener
+          return () => undefined
+        }),
+        cancelResumeImport,
+      },
+    })
+
+    render(<App />)
+    await waitFor(() => expect(window.desktopApi!.files.onResumeImportProgress).toHaveBeenCalled())
+
+    await user.click(screen.getByRole('button', { name: /简历导入/ }))
+    await user.click(screen.getByRole('button', { name: '选择多份简历' }))
+
+    act(() => {
+      importListener?.({
+        sessionId: 'cancel-session',
+        status: 'progress',
+        processed: 1,
+        total: 2,
+        cached: 1,
+        failed: 0,
+        currentFileName: '待取消候选人.txt',
+        batch: [summary],
+      })
+    })
+
+    expect(await screen.findByText('待取消候选人.txt')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '取消导入' }))
+
+    expect(cancelResumeImport).toHaveBeenCalledWith('cancel-session')
+
+    await act(async () => {
+      resolveImport?.({
+        sessionId: 'cancel-session',
+        resumes: [],
+        errors: [],
+        cancelled: true,
+      })
+    })
+
+    await waitFor(() => expect(screen.queryByText('待取消候选人.txt')).not.toBeInTheDocument())
+  })
+
   it('imports selected desktop resume files and runs screening without sample data', async () => {
     const user = userEvent.setup()
     const resume: ResumeDocument = {
@@ -90,7 +312,7 @@ describe('App smoke flow', () => {
     }
     window.desktopApi = createDesktopApiMock({
       files: {
-        pickResumeFiles: vi.fn().mockResolvedValue({ resumes: [resume], errors: [] }),
+        pickResumeFiles: vi.fn().mockResolvedValue(importResult([resume])),
       },
     })
 
@@ -108,8 +330,97 @@ describe('App smoke flow', () => {
 
     await user.click(screen.getByRole('button', { name: '开始筛选' }))
 
+    await waitFor(() =>
+      expect(window.desktopApi!.files.loadCachedResumes).toHaveBeenCalledWith([
+        expect.objectContaining({ cacheKey: 'resume-1', sessionId: 'test-session' }),
+      ]),
+    )
     expect(await screen.findByRole('heading', { name: '候选人排序' })).toBeInTheDocument()
     expect(screen.getAllByText('王五-前端').length).toBeGreaterThan(0)
+  })
+
+  it('includes the job agent column in preview CSV downloads', async () => {
+    const user = userEvent.setup()
+    const resume: ResumeDocument = {
+      id: 'resume-preview-export-1',
+      fileName: '预览导出候选人.txt',
+      extension: '.txt',
+      text: '预览导出候选人 React TypeScript',
+      wordCount: 4,
+    }
+    const scorecard: CandidateScorecard & { jobAgentId: string; jobAgentTitle: string } = {
+      resumeId: resume.id,
+      fileName: resume.fileName,
+      candidateName: '预览导出候选人',
+      jobAgentId: 'hanlin-ai-agent-technician',
+      jobAgentTitle: 'AI智能体搭建技术员',
+      overallScore: 88,
+      recommendation: 'strong_yes',
+      criterionScores: [],
+      strengths: ['AI Agent 项目经验'],
+      gaps: [],
+      risks: [],
+      evidenceSummary: ['React TypeScript'],
+      reviewerNotes: '建议一面',
+    }
+    let capturedBlob: Blob | undefined
+    const originalCreateObjectURL = URL.createObjectURL
+    const originalRevokeObjectURL = URL.revokeObjectURL
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn((blob: Blob) => {
+        capturedBlob = blob
+        return 'blob:preview-csv'
+      }),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    window.desktopApi = createDesktopApiMock({
+      settings: {
+        hasApiKey: vi.fn().mockResolvedValue(true),
+      },
+      files: {
+        pickResumeFiles: vi.fn().mockResolvedValue(importResult([resume])),
+      },
+      agents: {
+        runMultiAgentScreening: vi.fn().mockResolvedValue({ scorecards: [scorecard], errors: [] }),
+      },
+    })
+
+    try {
+      render(<App />)
+      expect(await screen.findByText('API key 已配置')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+      await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+      await user.click(screen.getByRole('button', { name: /简历导入/ }))
+      await user.click(screen.getByRole('button', { name: '选择多份简历' }))
+      await user.click(screen.getByRole('button', { name: '开始筛选' }))
+      expect(await screen.findByRole('heading', { name: '候选人排序' })).toBeInTheDocument()
+
+      delete (window.desktopApi!.export as Partial<DesktopApi['export']>).csv
+      await user.click(screen.getByRole('button', { name: /运行筛选/ }))
+      await user.click(screen.getByRole('button', { name: /结果导出/ }))
+      await user.click(screen.getByRole('button', { name: '导出 CSV' }))
+
+      expect(clickSpy).toHaveBeenCalled()
+      const csv = await capturedBlob!.text()
+      expect(csv.split('\n')[0]).toContain('岗位 Agent')
+      expect(csv).toContain('AI智能体搭建技术员')
+    } finally {
+      Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        value: originalCreateObjectURL,
+      })
+      Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        value: originalRevokeObjectURL,
+      })
+      clickSpy.mockRestore()
+    }
   })
 
   it('resets the screening waiting state after a completed run', async () => {
@@ -123,7 +434,7 @@ describe('App smoke flow', () => {
     }
     window.desktopApi = createDesktopApiMock({
       files: {
-        pickResumeFiles: vi.fn().mockResolvedValue({ resumes: [resume], errors: [] }),
+        pickResumeFiles: vi.fn().mockResolvedValue(importResult([resume])),
       },
     })
 
@@ -161,7 +472,7 @@ describe('App smoke flow', () => {
     }
     window.desktopApi = createDesktopApiMock({
       files: {
-        pickResumeFiles: vi.fn().mockResolvedValue({ resumes: [resumeA, resumeB], errors: [] }),
+        pickResumeFiles: vi.fn().mockResolvedValue(importResult([resumeA, resumeB])),
       },
     })
 
@@ -174,8 +485,135 @@ describe('App smoke flow', () => {
     await user.click(screen.getByRole('button', { name: '开始筛选' }))
 
     expect(await screen.findByText('正在处理：候选人A.txt')).toBeInTheDocument()
-    expect(screen.getByText('0 / 2')).toBeInTheDocument()
     expect(screen.getByRole('progressbar', { name: '筛选进度' })).toHaveAttribute('max', '2')
+  })
+
+  it('shows routing and model-waiting progress during desktop multi-agent screening', async () => {
+    const user = userEvent.setup()
+    const resume: ResumeDocument = {
+      id: 'resume-routing-1',
+      fileName: '路由候选人.txt',
+      extension: '.txt',
+      text: '路由候选人 React TypeScript',
+      wordCount: 3,
+    }
+    let progressListener: ((event: ScreeningProgressEvent) => void) | undefined
+    window.desktopApi = createDesktopApiMock({
+      settings: {
+        hasApiKey: vi.fn().mockResolvedValue(true),
+      },
+      files: {
+        pickResumeFiles: vi.fn().mockResolvedValue(importResult([resume])),
+      },
+      agents: {
+        onScreeningProgress: vi.fn((listener) => {
+          progressListener = listener
+          return () => undefined
+        }),
+        runMultiAgentScreening: vi.fn(
+          async () =>
+            await new Promise<ScreeningBatchResult>(() => {
+              // keep the run active so progress events remain visible
+            }),
+        ),
+      },
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText('API key 已配置')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /简历导入/ }))
+    await user.click(screen.getByRole('button', { name: '选择多份简历' }))
+    await user.click(screen.getByRole('button', { name: '开始筛选' }))
+
+    await waitFor(() => expect(window.desktopApi!.agents.onScreeningProgress).toHaveBeenCalled())
+
+    act(() => {
+      progressListener?.({
+        status: 'routing',
+        phase: 'routing',
+        resumeId: 'resume-routing-1',
+        fileName: '路由候选人.txt',
+        completed: 1,
+        total: 3,
+        started: 1,
+        active: 0,
+      })
+    })
+
+    expect(await screen.findByRole('heading', { name: '正在分配简历给岗位 Agent' })).toBeInTheDocument()
+    expect(screen.getByText('正在分配：路由候选人.txt')).toBeInTheDocument()
+    expect(screen.getByText('1 / 3')).toBeInTheDocument()
+
+    act(() => {
+      progressListener?.({
+        status: 'started',
+        phase: 'screening',
+        resumeId: 'resume-routing-1',
+        fileName: '路由候选人.txt',
+        completed: 0,
+        total: 3,
+        started: 2,
+        active: 2,
+      })
+    })
+
+    expect(await screen.findByRole('heading', { name: '岗位 Agent 正在筛选简历' })).toBeInTheDocument()
+    expect(screen.getByText('正在处理：路由候选人.txt')).toBeInTheDocument()
+    expect(screen.getByText('已发起 2 / 3，等待返回 2 份')).toBeInTheDocument()
+  })
+
+  it('stops an active desktop screening run without opening results', async () => {
+    const user = userEvent.setup()
+    const resume: ResumeDocument = {
+      id: 'resume-stop-1',
+      fileName: '停止候选人.txt',
+      extension: '.txt',
+      text: '停止候选人 React TypeScript',
+      wordCount: 3,
+    }
+    let rejectScreening: ((error: Error) => void) | undefined
+    const cancelScreening = vi.fn().mockResolvedValue(true)
+    window.desktopApi = createDesktopApiMock({
+      settings: {
+        hasApiKey: vi.fn().mockResolvedValue(true),
+      },
+      files: {
+        pickResumeFiles: vi.fn().mockResolvedValue(importResult([resume])),
+      },
+      agents: {
+        cancelScreening,
+        runMultiAgentScreening: vi.fn(
+          async () =>
+            await new Promise<ScreeningBatchResult>((_resolve, reject) => {
+              rejectScreening = reject
+            }),
+        ),
+      },
+    })
+
+    render(<App />)
+    expect(await screen.findByText('API key 已配置')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /简历导入/ }))
+    await user.click(screen.getByRole('button', { name: '选择多份简历' }))
+    await user.click(screen.getByRole('button', { name: '开始筛选' }))
+
+    await user.click(await screen.findByRole('button', { name: '停止筛选' }))
+    expect(cancelScreening).toHaveBeenCalled()
+
+    await act(async () => {
+      rejectScreening?.(new Error('筛选已停止'))
+    })
+
+    expect(await screen.findByText('已停止筛选')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '筛选任务待开始' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '候选人排序' })).not.toBeInTheDocument()
   })
 
   it('marks the job agent step as generating while a config request is in flight', async () => {
@@ -229,7 +667,7 @@ describe('App smoke flow', () => {
     }
     window.desktopApi = createDesktopApiMock({
       files: {
-        pickResumeFolder: vi.fn().mockResolvedValue({ resumes: [resume], errors: [] }),
+        pickResumeFolder: vi.fn().mockResolvedValue(importResult([resume])),
       },
     })
 
@@ -262,7 +700,7 @@ describe('App smoke flow', () => {
     ]
     window.desktopApi = createDesktopApiMock({
       files: {
-        pickResumeFiles: vi.fn().mockResolvedValue({ resumes, errors: [] }),
+        pickResumeFiles: vi.fn().mockResolvedValue(importResult(resumes)),
       },
     })
 
@@ -274,6 +712,7 @@ describe('App smoke flow', () => {
 
     await user.click(screen.getByRole('button', { name: '删除全部简历' }))
 
+    expect(window.desktopApi.files.clearResumeImportCache).toHaveBeenCalledWith(['test-session'])
     expect(screen.queryByText('清空候选人A.txt')).not.toBeInTheDocument()
     expect(screen.queryByText('清空候选人B.txt')).not.toBeInTheDocument()
     expect(screen.getByText('还没有简历。请从电脑选择多份简历，或导入一个包含简历的文件夹。')).toBeInTheDocument()
@@ -291,7 +730,7 @@ describe('App smoke flow', () => {
     }
     window.desktopApi = createDesktopApiMock({
       files: {
-        pickResumeFiles: vi.fn().mockResolvedValue({ resumes: [resume], errors: [] }),
+        pickResumeFiles: vi.fn().mockResolvedValue(importResult([resume])),
       },
     })
 
@@ -314,7 +753,7 @@ describe('App smoke flow', () => {
     const saveSettings = vi.fn().mockImplementation(async (settings) => settings)
     window.desktopApi = createDesktopApiMock({
       settings: {
-        getSettings: vi.fn().mockResolvedValue({ model: 'gpt-5.2', baseUrl: 'https://api.example.com/v1' }),
+        getSettings: vi.fn().mockResolvedValue({ ...defaultSettings, baseUrl: 'https://api.example.com/v1' }),
         saveSettings,
         fetchModels: vi.fn().mockResolvedValue(['gpt-5.4-mini', 'gpt-5.4']),
       },
@@ -334,6 +773,9 @@ describe('App smoke flow', () => {
     expect(saveSettings).toHaveBeenCalledWith({
       model: 'gpt-5.4-mini',
       baseUrl: 'https://proxy.example.com/v1',
+      routingMode: 'hybrid',
+      filenameAliases: [],
+      llmRoutingConcurrency: 10,
     })
 
   })
@@ -345,7 +787,7 @@ describe('App smoke flow', () => {
     window.desktopApi = createDesktopApiMock({
       settings: {
         hasApiKey: vi.fn().mockResolvedValue(true),
-        getSettings: vi.fn().mockResolvedValue({ model: 'custom-local-model', baseUrl: '' }),
+        getSettings: vi.fn().mockResolvedValue({ ...defaultSettings, model: 'custom-local-model' }),
         saveSettings,
         fetchModels,
       },
@@ -369,6 +811,9 @@ describe('App smoke flow', () => {
     expect(saveSettings).toHaveBeenLastCalledWith({
       model: 'my-router-model',
       baseUrl: '',
+      routingMode: 'hybrid',
+      filenameAliases: [],
+      llmRoutingConcurrency: 10,
     })
 
   })

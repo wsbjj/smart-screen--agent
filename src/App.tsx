@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { createFallbackJobConfig } from './core/jobConfig.js'
 import { companyJobPresets } from './core/jobPresets.js'
@@ -6,8 +6,13 @@ import { defaultScreeningConcurrency, runScreeningBatch } from './core/screening
 import type {
   AgentStatusEvent,
   CandidateScorecard,
+  FilenameRouteAlias,
+  ImportedResumeSummary,
   JobAgentConfig,
   ResumeDocument,
+  ResumeImportProgressEvent,
+  ResumeImportResult,
+  RoutingMode,
   ScreeningBatchResult,
   ScreeningProgressEvent,
 } from './shared/types.js'
@@ -22,16 +27,26 @@ type Toast = {
   message: string
 }
 
-type BusyTask = 'job' | 'screening' | null
+type BusyTask = 'job' | 'import' | 'screening' | null
 
 type ScreeningProgressState = {
   completed: number
   total: number
   currentFileName: string
   status: ScreeningProgressEvent['status'] | 'pending'
+  phase: ScreeningProgressEvent['phase'] | 'pending'
+  started: number
+  active: number
 }
 
+type ResumeImportProgressState = Pick<
+  ResumeImportProgressEvent,
+  'sessionId' | 'status' | 'processed' | 'total' | 'cached' | 'failed' | 'currentFileName'
+>
+
 const bridgeUnavailableMessage = '桌面端桥接未加载，请重启应用或重新构建'
+const defaultRoutingMode: RoutingMode = 'hybrid'
+const defaultLlmRoutingConcurrency = 10
 
 function hasFunction(record: Record<string, unknown>, key: string): boolean {
   return typeof record[key] === 'function'
@@ -56,9 +71,14 @@ function isDesktopApiReady(api: unknown): api is DesktopApi {
       hasFunction(api.files, 'pickJobFile') &&
       hasFunction(api.files, 'pickResumeFiles') &&
       hasFunction(api.files, 'pickResumeFolder') &&
+      hasFunction(api.files, 'onResumeImportProgress') &&
+      hasFunction(api.files, 'cancelResumeImport') &&
+      hasFunction(api.files, 'clearResumeImportCache') &&
+      hasFunction(api.files, 'loadCachedResumes') &&
       hasFunction(api.agents, 'generateJobConfig') &&
       hasFunction(api.agents, 'runScreening') &&
       hasFunction(api.agents, 'runMultiAgentScreening') &&
+      hasFunction(api.agents, 'cancelScreening') &&
       hasFunction(api.agents, 'onScreeningProgress') &&
       hasFunction(api.agents, 'onAgentStatus') &&
       hasFunction(api.export, 'csv') &&
@@ -68,6 +88,10 @@ function isDesktopApiReady(api: unknown): api is DesktopApi {
 
 function delay(ms: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+}
+
+function isScreeningStoppedError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('筛选已停止')
 }
 
 function createLocalRunner(jobConfig: JobAgentConfig) {
@@ -139,7 +163,7 @@ function downloadText(filename: string, content: string) {
 }
 
 function toPreviewCsv(scorecards: CandidateScorecard[]): string {
-  const headers = ['排名', '候选人', '文件名', '总分', '推荐等级', '亮点', '缺失项', '风险点', '证据摘要', '复核建议']
+  const headers = ['排名', '候选人', '文件名', '岗位 Agent', '总分', '推荐等级', '亮点', '缺失项', '风险点', '证据摘要', '复核建议']
   const escape = (value: string | number) => {
     const text = String(value)
     return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
@@ -151,6 +175,7 @@ function toPreviewCsv(scorecards: CandidateScorecard[]): string {
         index + 1,
         scorecard.candidateName,
         scorecard.fileName,
+        scorecard.jobAgentTitle ?? '',
         scorecard.overallScore,
         scorecard.recommendation,
         scorecard.strengths.join('；'),
@@ -165,24 +190,54 @@ function toPreviewCsv(scorecards: CandidateScorecard[]): string {
   ].join('\n')
 }
 
+function mergeResumeSummaries(
+  current: ImportedResumeSummary[],
+  imported: ImportedResumeSummary[],
+): ImportedResumeSummary[] {
+  if (imported.length === 0) {
+    return current
+  }
+  const seen = new Set(current.map((resume) => `${resume.sessionId}:${resume.cacheKey}`))
+  const next = [...current]
+  for (const resume of imported) {
+    const key = `${resume.sessionId}:${resume.cacheKey}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      next.push(resume)
+    }
+  }
+  return next
+}
+
+function createFilenameAliasId() {
+  return `alias-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 function App() {
   const [activeStep, setActiveStep] = useState<StepId>('settings')
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false)
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [model, setModel] = useState(defaultModel)
   const [baseUrl, setBaseUrl] = useState('')
+  const [routingMode, setRoutingMode] = useState<RoutingMode>(defaultRoutingMode)
+  const [filenameAliases, setFilenameAliases] = useState<FilenameRouteAlias[]>([])
+  const [llmRoutingConcurrency, setLlmRoutingConcurrency] = useState(defaultLlmRoutingConcurrency)
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [isFetchingModels, setIsFetchingModels] = useState(false)
   const [jdText, setJdText] = useState('')
   const [jobSourceName, setJobSourceName] = useState<string | undefined>()
   const [jobConfigs, setJobConfigs] = useState<JobAgentConfig[]>([])
-  const [resumes, setResumes] = useState<ResumeDocument[]>([])
+  const [resumes, setResumes] = useState<ImportedResumeSummary[]>([])
   const [batchResult, setBatchResult] = useState<ScreeningBatchResult | null>(null)
   const [selectedResumeId, setSelectedResumeId] = useState<string | null>(null)
   const [busyTask, setBusyTask] = useState<BusyTask>(null)
+  const [resumeImportProgress, setResumeImportProgress] = useState<ResumeImportProgressState | null>(null)
   const [screeningProgress, setScreeningProgress] = useState<ScreeningProgressState | null>(null)
   const [agentStatusMap, setAgentStatusMap] = useState<Map<string, AgentStatusEvent>>(new Map())
+  const [isStoppingScreening, setIsStoppingScreening] = useState(false)
   const [toast, setToast] = useState<Toast | null>(null)
+  const localScreeningAbortRef = useRef<AbortController | null>(null)
+  const screeningStopRequestedRef = useRef(false)
 
   // Backward-compatible single config reference
   const jobConfig = jobConfigs[0] ?? null
@@ -190,13 +245,25 @@ function App() {
   const desktopApi = isDesktopApiReady(window.desktopApi) ? window.desktopApi : undefined
   const hasDesktopApi = Boolean(desktopApi)
   const isGeneratingJob = busyTask === 'job'
+  const isImporting = busyTask === 'import'
   const isScreening = busyTask === 'screening'
   const isBusy = busyTask !== null
   const selectedScorecard = useMemo(
     () => batchResult?.scorecards.find((item) => item.resumeId === selectedResumeId) ?? batchResult?.scorecards[0],
     [batchResult, selectedResumeId],
   )
+  const resumeStepMeta = isImporting ? `${resumes.length} 份 · 导入中` : `${resumes.length} 份`
   const screeningStepMeta = isScreening ? '运行中' : jobConfigs.length === 0 ? '待岗位' : resumes.length === 0 ? '待简历' : '就绪'
+  const aliasTargetAgents = useMemo(() => {
+    const byId = new Map<string, JobAgentConfig>()
+    for (const preset of companyJobPresets) {
+      byId.set(preset.config.id, preset.config)
+    }
+    for (const config of jobConfigs) {
+      byId.set(config.id, config)
+    }
+    return [...byId.values()]
+  }, [jobConfigs])
 
   useEffect(() => {
     desktopApi?.settings.hasApiKey().then(setApiKeyConfigured).catch(() => setApiKeyConfigured(false))
@@ -205,8 +272,31 @@ function App() {
       .then((settings) => {
         setModel(settings.model)
         setBaseUrl(settings.baseUrl)
+        setRoutingMode(settings.routingMode ?? defaultRoutingMode)
+        setFilenameAliases(settings.filenameAliases ?? [])
+        setLlmRoutingConcurrency(settings.llmRoutingConcurrency ?? defaultLlmRoutingConcurrency)
       })
       .catch(() => undefined)
+  }, [desktopApi])
+
+  useEffect(() => {
+    return desktopApi?.files.onResumeImportProgress((event) => {
+      setResumeImportProgress({
+        sessionId: event.sessionId,
+        status: event.status,
+        processed: event.processed,
+        total: event.total,
+        cached: event.cached,
+        failed: event.failed,
+        currentFileName: event.currentFileName,
+      })
+      if (event.batch?.length) {
+        setResumes((current) => mergeResumeSummaries(current, event.batch ?? []))
+      }
+      if (event.status === 'cancelled') {
+        setResumes((current) => current.filter((resume) => resume.sessionId !== event.sessionId))
+      }
+    })
   }, [desktopApi])
 
   function notify(tone: Toast['tone'], message: string) {
@@ -241,9 +331,15 @@ function App() {
       const settings = await desktopApi.settings.saveSettings({
         model,
         baseUrl,
+        routingMode,
+        filenameAliases,
+        llmRoutingConcurrency,
       })
       setModel(settings.model)
       setBaseUrl(settings.baseUrl)
+      setRoutingMode(settings.routingMode)
+      setFilenameAliases(settings.filenameAliases)
+      setLlmRoutingConcurrency(settings.llmRoutingConcurrency)
       notify('success', '连接设置已保存')
     } catch (error) {
       notify('error', error instanceof Error ? error.message : '连接设置保存失败')
@@ -331,8 +427,39 @@ function App() {
       return
     }
 
-    const result = await desktopApi.files.pickResumeFiles()
-    appendResumeImportResult(result)
+    setBusyTask('import')
+    setResumeImportProgress(null)
+    try {
+      const result = await desktopApi.files.pickResumeFiles()
+      appendResumeImportResult(result)
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : '简历导入失败')
+    } finally {
+      setBusyTask(null)
+      setResumeImportProgress(null)
+    }
+  }
+
+  function addFilenameAlias() {
+    const defaultAgentId = aliasTargetAgents[0]?.id ?? ''
+    setFilenameAliases((current) => [
+      ...current,
+      {
+        id: createFilenameAliasId(),
+        pattern: '',
+        agentId: defaultAgentId,
+      },
+    ])
+  }
+
+  function updateFilenameAlias(aliasId: string, patch: Partial<FilenameRouteAlias>) {
+    setFilenameAliases((current) =>
+      current.map((alias) => (alias.id === aliasId ? { ...alias, ...patch } : alias)),
+    )
+  }
+
+  function removeFilenameAlias(aliasId: string) {
+    setFilenameAliases((current) => current.filter((alias) => alias.id !== aliasId))
   }
 
   async function importResumeFolder() {
@@ -341,15 +468,38 @@ function App() {
       return
     }
 
-    const result = await desktopApi.files.pickResumeFolder()
-    appendResumeImportResult(result)
+    setBusyTask('import')
+    setResumeImportProgress(null)
+    try {
+      const result = await desktopApi.files.pickResumeFolder()
+      appendResumeImportResult(result)
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : '简历文件夹导入失败')
+    } finally {
+      setBusyTask(null)
+      setResumeImportProgress(null)
+    }
   }
 
-  function appendResumeImportResult(result: {
-    resumes: ResumeDocument[]
-    errors: Array<{ fileName: string; message: string }>
-  }) {
-    setResumes((current) => [...current, ...result.resumes])
+  function removeImportedSession(sessionId: string) {
+    setResumes((current) => current.filter((resume) => resume.sessionId !== sessionId))
+  }
+
+  function replaceImportedSession(sessionId: string, imported: ImportedResumeSummary[]) {
+    setResumes((current) => mergeResumeSummaries(
+      current.filter((resume) => resume.sessionId !== sessionId),
+      imported,
+    ))
+  }
+
+  function appendResumeImportResult(result: ResumeImportResult) {
+    if (result.cancelled) {
+      removeImportedSession(result.sessionId)
+      notify('info', '已取消本次简历导入')
+      return
+    }
+
+    replaceImportedSession(result.sessionId, result.resumes)
     if (result.errors.length > 0) {
       notify('error', `${result.errors.length} 个文件解析失败`)
     } else if (result.resumes.length > 0) {
@@ -357,16 +507,36 @@ function App() {
     }
   }
 
-  function clearResumes() {
+  async function cancelResumeImport() {
+    if (!desktopApi || !resumeImportProgress?.sessionId) {
+      return
+    }
+    await desktopApi.files.cancelResumeImport(resumeImportProgress.sessionId)
+    notify('info', '正在取消导入...')
+  }
+
+  async function clearResumes() {
+    if (desktopApi) {
+      const sessionIds = [...new Set(resumes.map((resume) => resume.sessionId))]
+      if (sessionIds.length > 0) {
+        await desktopApi.files.clearResumeImportCache(sessionIds)
+      }
+    }
     setResumes([])
     setBatchResult(null)
     setSelectedResumeId(null)
+    setResumeImportProgress(null)
     setScreeningProgress(null)
     setAgentStatusMap(new Map())
     notify('success', '已删除全部简历')
   }
 
   function requestScreening() {
+    if (isImporting) {
+      notify('info', '请等待简历导入完成后再开始筛选')
+      return
+    }
+
     if (jobConfigs.length === 0) {
       notify('error', '请先生成岗位 Agent，再开始筛选')
       setActiveStep('job')
@@ -468,6 +638,9 @@ function App() {
       total: event.total,
       currentFileName: event.fileName,
       status: event.status,
+      phase: event.phase ?? 'screening',
+      started: event.started ?? event.completed,
+      active: event.active ?? 0,
     })
   }
 
@@ -479,12 +652,39 @@ function App() {
     })
   }
 
+  async function stopScreening() {
+    if (!isScreening || isStoppingScreening) {
+      return
+    }
+    setIsStoppingScreening(true)
+    screeningStopRequestedRef.current = true
+
+    try {
+      if (desktopApi && apiKeyConfigured) {
+        await desktopApi.agents.cancelScreening()
+        return
+      }
+
+      if (!localScreeningAbortRef.current) {
+        return
+      }
+      localScreeningAbortRef.current.abort()
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : '停止筛选失败')
+      setIsStoppingScreening(false)
+    }
+  }
+
   async function runScreening() {
     if (jobConfigs.length === 0 || resumes.length === 0) {
       notify('error', '请先准备岗位 agent 和简历')
       return
     }
+    const useDesktopScreening = Boolean(desktopApi && apiKeyConfigured)
+    screeningStopRequestedRef.current = false
+    localScreeningAbortRef.current = useDesktopScreening ? null : new AbortController()
     setBusyTask('screening')
+    setIsStoppingScreening(false)
     setBatchResult(null)
     setSelectedResumeId(null)
     setAgentStatusMap(new Map())
@@ -493,44 +693,73 @@ function App() {
       total: resumes.length,
       currentFileName: resumes[0]?.fileName ?? '准备中',
       status: 'pending',
+      phase: 'pending',
+      started: 0,
+      active: 0,
     })
     setActiveStep('screening')
-    await delay(80)
-
-    const unsubscribeProgress =
-      desktopApi && apiKeyConfigured ? desktopApi.agents.onScreeningProgress(updateScreeningProgress) : undefined
-    const unsubscribeAgentStatus =
-      desktopApi && apiKeyConfigured ? desktopApi.agents.onAgentStatus(updateAgentStatus) : undefined
+    let unsubscribeProgress: (() => void) | undefined
+    let unsubscribeAgentStatus: (() => void) | undefined
 
     try {
+      await delay(80)
+      if (screeningStopRequestedRef.current) {
+        throw new Error('筛选已停止')
+      }
+
+      unsubscribeProgress =
+        desktopApi && apiKeyConfigured ? desktopApi.agents.onScreeningProgress(updateScreeningProgress) : undefined
+      unsubscribeAgentStatus =
+        desktopApi && apiKeyConfigured ? desktopApi.agents.onAgentStatus(updateAgentStatus) : undefined
+
       let result: ScreeningBatchResult
 
-      if (desktopApi && apiKeyConfigured) {
+      if (useDesktopScreening && desktopApi) {
         // 统一走多 Agent 路径（含单 Agent），以便触发 onAgentStatus 显示状态卡片
         result = await desktopApi.agents.runMultiAgentScreening({ agents: jobConfigs, resumes, model })
       } else {
+        const localController = localScreeningAbortRef.current ?? new AbortController()
+        localScreeningAbortRef.current = localController
+        const hydratedResumes = desktopApi ? await desktopApi.files.loadCachedResumes(resumes) : []
+        if (hydratedResumes.length === 0) {
+          throw new Error(bridgeUnavailableMessage)
+        }
         // 本地预览降级
         result = await runScreeningBatch({
           jobConfig: jobConfigs[0]!,
-          resumes,
+          resumes: hydratedResumes,
           runner: createLocalRunner(jobConfigs[0]!),
           concurrency: defaultScreeningConcurrency,
           maxRetries: 0,
+          signal: localController.signal,
           onProgress: updateScreeningProgress,
         })
       }
 
+      if (screeningStopRequestedRef.current) {
+        throw new Error('筛选已停止')
+      }
       setBatchResult(result)
       setSelectedResumeId(result.scorecards[0]?.resumeId ?? null)
       setScreeningProgress(null)
       setActiveStep('results')
       notify('success', `筛选完成：${result.scorecards.length} 份成功，${result.errors.length} 份失败`)
     } catch (error) {
-      notify('error', error instanceof Error ? error.message : '筛选失败')
-      setActiveStep('resumes')
+      if (isScreeningStoppedError(error)) {
+        notify('info', '已停止筛选')
+        setScreeningProgress(null)
+        setAgentStatusMap(new Map())
+        setActiveStep('screening')
+      } else {
+        notify('error', error instanceof Error ? error.message : '筛选失败')
+        setActiveStep('resumes')
+      }
     } finally {
       unsubscribeProgress?.()
       unsubscribeAgentStatus?.()
+      localScreeningAbortRef.current = null
+      screeningStopRequestedRef.current = false
+      setIsStoppingScreening(false)
       setBusyTask(null)
     }
   }
@@ -567,10 +796,32 @@ function App() {
   const steps: Array<{ id: StepId; label: string; meta: string }> = [
     { id: 'settings', label: '设置', meta: apiKeyConfigured ? '已配置' : '待配置' },
     { id: 'job', label: '岗位 Agent', meta: isGeneratingJob ? '生成中' : jobConfigs.length > 0 ? `${jobConfigs.length} 个` : '待生成' },
-    { id: 'resumes', label: '简历导入', meta: `${resumes.length} 份` },
+    { id: 'resumes', label: '简历导入', meta: resumeStepMeta },
     { id: 'screening', label: '运行筛选', meta: screeningStepMeta },
     { id: 'results', label: '结果导出', meta: `${batchResult?.scorecards.length ?? 0} 份` },
   ]
+  const screeningPhase = screeningProgress?.phase ?? 'pending'
+  const visibleScreeningProgress = screeningProgress
+    ? Math.max(screeningProgress.completed, screeningProgress.started)
+    : 0
+  const screeningHeading = !isScreening
+    ? '筛选任务待开始'
+    : screeningPhase === 'routing'
+      ? '正在分配简历给岗位 Agent'
+      : '岗位 Agent 正在筛选简历'
+  const screeningCurrentText = !isScreening
+    ? '等待开始'
+    : screeningPhase === 'routing'
+      ? `正在分配：${screeningProgress?.currentFileName ?? resumes[0]?.fileName ?? '准备中'}`
+      : `正在处理：${screeningProgress?.currentFileName ?? resumes[0]?.fileName ?? '准备中'}`
+  const screeningActivityText =
+    screeningProgress && isScreening
+      ? screeningPhase === 'routing'
+        ? `已分配 ${screeningProgress.completed} / ${screeningProgress.total}，分配中 ${screeningProgress.active} 份`
+        : screeningProgress.started > screeningProgress.completed
+          ? `已发起 ${screeningProgress.started} / ${screeningProgress.total}，等待返回 ${screeningProgress.active} 份`
+          : `已完成 ${screeningProgress.completed} / ${screeningProgress.total}`
+      : null
 
   return (
     <main className="shell">
@@ -686,6 +937,62 @@ function App() {
                 />
               </label>
               <p className="form-hint">留空时使用 OpenAI 默认地址；填写时会作为 Agents SDK 的 baseURL。</p>
+              <div className="routing-settings">
+                <label htmlFor="routing-mode-select">
+                  <span>路由模式</span>
+                  <select
+                    id="routing-mode-select"
+                    value={routingMode}
+                    onChange={(event) => setRoutingMode(event.target.value as RoutingMode)}
+                  >
+                    <option value="hybrid">混合加速</option>
+                    <option value="local_only">纯本地快速</option>
+                  </select>
+                </label>
+                <label htmlFor="llm-routing-concurrency-input">
+                  <span>LLM 分配并发</span>
+                  <input
+                    id="llm-routing-concurrency-input"
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={llmRoutingConcurrency}
+                    onChange={(event) => setLlmRoutingConcurrency(Number(event.target.value))}
+                  />
+                </label>
+                <div className="alias-editor">
+                  <div className="alias-editor-header">
+                    <span>文件名映射</span>
+                    <button type="button" onClick={addFilenameAlias}>
+                      新增映射
+                    </button>
+                  </div>
+                  {filenameAliases.map((alias, index) => (
+                    <div className="alias-row" key={alias.id}>
+                      <input
+                        aria-label={`文件名映射关键词 ${index + 1}`}
+                        type="text"
+                        value={alias.pattern}
+                        onChange={(event) => updateFilenameAlias(alias.id, { pattern: event.target.value })}
+                      />
+                      <select
+                        aria-label={`文件名映射目标 ${index + 1}`}
+                        value={alias.agentId}
+                        onChange={(event) => updateFilenameAlias(alias.id, { agentId: event.target.value })}
+                      >
+                        {aliasTargetAgents.map((agent) => (
+                          <option key={agent.id} value={agent.id}>
+                            {agent.title}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="button" onClick={() => removeFilenameAlias(alias.id)}>
+                        移除
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
               <div className="button-row">
                 <button type="button" className="primary" onClick={saveSettings}>
                   保存设置
@@ -863,23 +1170,53 @@ function App() {
                 <button type="button" className="danger" onClick={clearResumes} disabled={resumes.length === 0 || isBusy}>
                   删除全部简历
                 </button>
-                <button type="button" onClick={importResumes}>
+                <button type="button" onClick={importResumes} disabled={isBusy}>
                   选择多份简历
                 </button>
-                <button type="button" onClick={importResumeFolder}>
+                <button type="button" onClick={importResumeFolder} disabled={isBusy}>
                   导入文件夹
                 </button>
-                <button type="button" className="primary" onClick={requestScreening}>
+                <button type="button" className="primary" onClick={requestScreening} disabled={isBusy || resumes.length === 0}>
                   开始筛选
                 </button>
               </div>
             </div>
+            {resumeImportProgress && (
+              <div className="import-progress">
+                <div className="screening-progress-header">
+                  <div>
+                    <p className="section-kicker">Importing</p>
+                    <h3>{resumeImportProgress.status === 'scanning' ? '正在扫描文件夹' : '正在导入简历'}</h3>
+                  </div>
+                  <strong>{`${resumeImportProgress.processed} / ${Math.max(resumeImportProgress.total, 1)}`}</strong>
+                </div>
+                <progress
+                  aria-label="简历导入进度"
+                  value={resumeImportProgress.processed}
+                  max={Math.max(resumeImportProgress.total, 1)}
+                />
+                <p className="screening-current">
+                  {resumeImportProgress.currentFileName
+                    ? `正在处理：${resumeImportProgress.currentFileName}`
+                    : '准备解析简历'}
+                </p>
+                <div className="import-progress-meta">
+                  <span>{`已解析 ${resumeImportProgress.processed} / ${resumeImportProgress.total}`}</span>
+                  <span>{`成功 ${resumeImportProgress.cached}，失败 ${resumeImportProgress.failed}`}</span>
+                </div>
+                {isImporting && (
+                  <button type="button" onClick={cancelResumeImport}>
+                    取消导入
+                  </button>
+                )}
+              </div>
+            )}
             <div className="resume-grid">
               {resumes.map((resume) => (
                 <article key={resume.id} className="resume-card">
                   <strong>{resume.fileName}</strong>
                   <span>{resume.extension.toUpperCase()} · {resume.wordCount} words</span>
-                  <p>{resume.text.slice(0, 150)}</p>
+                  <p>{resume.preview}</p>
                   <button type="button" onClick={() => setResumes((current) => current.filter((item) => item.id !== resume.id))}>
                     移除
                   </button>
@@ -899,20 +1236,28 @@ function App() {
               <div className="screening-progress-header">
                 <div>
                   <p className="section-kicker">Screening</p>
-                  <h2>{isScreening ? '岗位 Agent 正在筛选简历' : '筛选任务待开始'}</h2>
+                  <h2>{screeningHeading}</h2>
                 </div>
-                <strong>{screeningProgress ? `${screeningProgress.completed} / ${screeningProgress.total}` : `0 / ${resumes.length}`}</strong>
+                <div className="screening-progress-actions">
+                  {isScreening && (
+                    <button type="button" className="danger" onClick={stopScreening} disabled={isStoppingScreening}>
+                      {isStoppingScreening ? '停止中...' : '停止筛选'}
+                    </button>
+                  )}
+                  <strong>{screeningProgress ? `${visibleScreeningProgress} / ${screeningProgress.total}` : `0 / ${resumes.length}`}</strong>
+                </div>
               </div>
               <progress
                 aria-label="筛选进度"
-                value={screeningProgress?.completed ?? 0}
+                value={visibleScreeningProgress}
                 max={screeningProgress?.total ?? Math.max(resumes.length, 1)}
               />
-              <p className="screening-current">
-                {isScreening
-                  ? `正在处理：${screeningProgress?.currentFileName ?? resumes[0]?.fileName ?? '准备中'}`
-                  : '等待开始'}
-              </p>
+              <p className="screening-current">{screeningCurrentText}</p>
+              {screeningActivityText && (
+                <div className="import-progress-meta">
+                  <span>{screeningActivityText}</span>
+                </div>
+              )}
               {agentStatusMap.size > 0 && (
                 <div className="agent-status-grid">
                   {[...agentStatusMap.values()].map((s) => (

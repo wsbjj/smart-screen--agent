@@ -372,6 +372,37 @@ label span {
   min-width: 104px;
 }
 
+.routing-settings {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.alias-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.alias-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.alias-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.alias-row button {
+  min-width: 72px;
+}
+
 .section-heading {
   display: flex;
   justify-content: space-between;
@@ -583,6 +614,32 @@ label span {
   word-break: break-word;
 }
 
+.import-progress {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: #fffefa;
+  box-shadow: var(--shadow-line);
+}
+
+.import-progress h3 {
+  margin: 4px 0 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.import-progress-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 900;
+}
+
 .run-panel {
   display: grid;
   place-items: center;
@@ -613,10 +670,22 @@ label span {
   gap: 18px;
   align-items: flex-end;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .screening-progress-header > div {
   min-width: 0;
+}
+
+.screening-progress-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.screening-progress-actions button {
+  white-space: nowrap;
 }
 
 .screening-progress-header strong {

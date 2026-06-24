@@ -15,6 +15,8 @@ export const candidateScorecardSchema = z.object({
   resumeId: z.string(),
   fileName: z.string(),
   candidateName: z.string(),
+  jobAgentId: z.string().optional(),
+  jobAgentTitle: z.string().optional(),
   overallScore: z.number(),
   recommendation: recommendationSchema,
   criterionScores: z.array(criterionScoreSchema),
@@ -35,6 +37,14 @@ export const jobCriterionSchema = z.object({
 export const routingOutputSchema = z.object({
   agentId: z.string(),
   reasoning: z.string(),
+})
+
+export const routingBatchOutputSchema = z.object({
+  decisions: z.array(z.object({
+    resumeId: z.string(),
+    agentId: z.string(),
+    reasoning: z.string(),
+  })),
 })
 
 export const jobAgentConfigSchema = z.object({

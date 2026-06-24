@@ -1,7 +1,7 @@
 {
   "name": "smart-screen--agent",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Desktop resume screening agent",
   "author": "wsbjj",
   "type": "module",

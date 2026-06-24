@@ -1,21 +1,25 @@
 import type {
   AgentStatusEvent,
   CandidateScorecard,
+  FilenameRouteAlias,
+  ImportedResumeSummary,
   JobAgentConfig,
   ParsedDocument,
+  ResumeImportProgressEvent,
+  ResumeImportResult,
+  ResumeScreeningInput,
   ResumeDocument,
+  RoutingMode,
   ScreeningBatchResult,
   ScreeningProgressEvent,
 } from './types.js'
 
-export type ResumeImportResult = {
-  resumes: ResumeDocument[]
-  errors: Array<{ fileName: string; message: string }>
-}
-
 export type AppSettings = {
   model: string
   baseUrl: string
+  routingMode: RoutingMode
+  filenameAliases: FilenameRouteAlias[]
+  llmRoutingConcurrency: number
 }
 
 export type FetchModelsInput = {
@@ -35,6 +39,10 @@ export type DesktopApi = {
     pickJobFile: () => Promise<ParsedDocument | null>
     pickResumeFiles: () => Promise<ResumeImportResult>
     pickResumeFolder: () => Promise<ResumeImportResult>
+    onResumeImportProgress: (listener: (event: ResumeImportProgressEvent) => void) => () => void
+    cancelResumeImport: (sessionId: string) => Promise<void>
+    clearResumeImportCache: (sessionIds: string[]) => Promise<void>
+    loadCachedResumes: (items: ImportedResumeSummary[]) => Promise<ResumeDocument[]>
   }
   agents: {
     generateJobConfig: (payload: {
@@ -44,14 +52,15 @@ export type DesktopApi = {
     }) => Promise<JobAgentConfig>
     runScreening: (payload: {
       jobConfig: JobAgentConfig
-      resumes: ResumeDocument[]
+      resumes: ResumeScreeningInput[]
       model: string
     }) => Promise<ScreeningBatchResult>
     runMultiAgentScreening: (payload: {
       agents: JobAgentConfig[]
-      resumes: ResumeDocument[]
+      resumes: ResumeScreeningInput[]
       model: string
     }) => Promise<ScreeningBatchResult>
+    cancelScreening: () => Promise<boolean>
     onScreeningProgress: (listener: (event: ScreeningProgressEvent) => void) => () => void
     onAgentStatus: (listener: (event: AgentStatusEvent) => void) => () => void
   }
