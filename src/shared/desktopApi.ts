@@ -10,6 +10,8 @@ import type {
   ResumeScreeningInput,
   ResumeDocument,
   RoutingMode,
+  SavedJobRecord,
+  SaveJobInput,
   ScreeningBatchResult,
   ScreeningProgressEvent,
 } from './types.js'
@@ -44,11 +46,17 @@ export type DesktopApi = {
     clearResumeImportCache: (sessionIds: string[]) => Promise<void>
     loadCachedResumes: (items: ImportedResumeSummary[]) => Promise<ResumeDocument[]>
   }
+  jobs: {
+    list: () => Promise<SavedJobRecord[]>
+    save: (input: SaveJobInput) => Promise<SavedJobRecord>
+    delete: (id: string) => Promise<boolean>
+  }
   agents: {
     generateJobConfig: (payload: {
       jdText: string
       sourceFileName?: string
       model: string
+      currentConfig?: JobAgentConfig
     }) => Promise<JobAgentConfig>
     runScreening: (payload: {
       jobConfig: JobAgentConfig

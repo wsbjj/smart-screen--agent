@@ -17,6 +17,9 @@ const channels = {
   cancelResumeImport: 'files:cancel-resume-import',
   clearResumeImportCache: 'files:clear-resume-import-cache',
   loadCachedResumes: 'files:load-cached-resumes',
+  listJobs: 'jobs:list',
+  saveJob: 'jobs:save',
+  deleteJob: 'jobs:delete',
   generateJobConfig: 'agents:generate-job-config',
   runScreening: 'agents:run-screening',
   screeningProgress: 'agents:screening-progress',
@@ -48,6 +51,11 @@ const api: DesktopApi = {
     cancelResumeImport: (sessionId) => ipcRenderer.invoke(channels.cancelResumeImport, sessionId),
     clearResumeImportCache: (sessionIds) => ipcRenderer.invoke(channels.clearResumeImportCache, sessionIds),
     loadCachedResumes: (items) => ipcRenderer.invoke(channels.loadCachedResumes, items),
+  },
+  jobs: {
+    list: () => ipcRenderer.invoke(channels.listJobs),
+    save: (input) => ipcRenderer.invoke(channels.saveJob, input),
+    delete: (id) => ipcRenderer.invoke(channels.deleteJob, id),
   },
   agents: {
     generateJobConfig: (payload) => ipcRenderer.invoke(channels.generateJobConfig, payload),

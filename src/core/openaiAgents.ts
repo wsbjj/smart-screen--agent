@@ -118,7 +118,16 @@ export async function generateJobAgentConfig(
     ].join('\n'),
   })
 
-  const result = await runWithProvider(agent, JSON.stringify({ jdText: input.jdText, fallback }), options)
+  const result = await runWithProvider(
+    agent,
+    JSON.stringify({
+      jdText: input.jdText,
+      sourceFileName: input.sourceFileName,
+      currentConfig: input.currentConfig,
+      fallback,
+    }),
+    options,
+  )
   const output = result.finalOutput as JobAgentConfigOutput | undefined
 
   if (!output) {

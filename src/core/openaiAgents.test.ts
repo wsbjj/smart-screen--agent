@@ -122,6 +122,26 @@ describe('OpenAI agent runners', () => {
     expect(runMock.mock.calls[0]?.[2]).toEqual({ stream: true })
   })
 
+  it('includes the current config when asking AI to edit an existing job', async () => {
+    runMock.mockResolvedValue(makeStreamedResult({ ...jobConfig, title: '资深前端工程师' }))
+
+    await generateJobAgentConfig(
+      {
+        jdText: '更新后的 React 岗位 JD',
+        sourceFileName: 'frontend-updated.txt',
+        currentConfig: jobConfig,
+      },
+      { apiKey: 'sk-test', model: 'gpt-5.2' },
+    )
+
+    const request = JSON.parse(runMock.mock.calls[0]?.[1] as string)
+    expect(request).toMatchObject({
+      jdText: '更新后的 React 岗位 JD',
+      sourceFileName: 'frontend-updated.txt',
+      currentConfig: jobConfig,
+    })
+  })
+
   it('falls back to a non-streaming job config request when the SDK rejects provider stream status values', async () => {
     runMock.mockResolvedValueOnce(makeBrokenStreamedResult())
     runMock.mockResolvedValueOnce({ finalOutput: jobConfig })

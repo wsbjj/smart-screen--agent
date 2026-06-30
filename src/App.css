@@ -226,6 +226,30 @@ textarea {
   font-size: 13px;
 }
 
+.version-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(248, 241, 225, 0.18);
+  border-radius: 7px;
+  padding: 9px 11px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #d8e0d3;
+  font-size: 12px;
+}
+
+.version-badge span {
+  color: #aebbad;
+  font-weight: 800;
+}
+
+.version-badge strong {
+  color: var(--amber);
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
 .workspace {
   padding: 30px 34px 42px;
   min-width: 0;
@@ -430,6 +454,45 @@ label span {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 9px;
   margin: -4px 0 14px;
+}
+
+.job-library-section {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.job-library-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.job-library-header em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.job-library-list {
+  margin-bottom: 0;
+}
+
+.compact-empty {
+  grid-column: 1 / -1;
+  padding: 14px;
+  font-size: 13px;
+}
+
+.job-action-row {
+  margin-top: 12px;
+}
+
+.job-action-row button {
+  flex: 1 1 150px;
 }
 
 .preset-strip button {

@@ -13,6 +13,7 @@ import type {
   ResumeImportProgressEvent,
   ResumeImportResult,
   RoutingMode,
+  SavedJobRecord,
   ScreeningBatchResult,
   ScreeningProgressEvent,
 } from './shared/types.js'
@@ -28,6 +29,8 @@ type Toast = {
 }
 
 type BusyTask = 'job' | 'import' | 'screening' | null
+
+type JobEditorMode = 'empty' | 'new' | 'saved' | 'preset'
 
 type ScreeningProgressState = {
   completed: number
@@ -57,7 +60,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isDesktopApiReady(api: unknown): api is DesktopApi {
-  if (!isObject(api) || !isObject(api.settings) || !isObject(api.files) || !isObject(api.agents) || !isObject(api.export)) {
+  if (
+    !isObject(api) ||
+    !isObject(api.settings) ||
+    !isObject(api.files) ||
+    !isObject(api.jobs) ||
+    !isObject(api.agents) ||
+    !isObject(api.export)
+  ) {
     return false
   }
 
@@ -75,6 +85,9 @@ function isDesktopApiReady(api: unknown): api is DesktopApi {
       hasFunction(api.files, 'cancelResumeImport') &&
       hasFunction(api.files, 'clearResumeImportCache') &&
       hasFunction(api.files, 'loadCachedResumes') &&
+      hasFunction(api.jobs, 'list') &&
+      hasFunction(api.jobs, 'save') &&
+      hasFunction(api.jobs, 'delete') &&
       hasFunction(api.agents, 'generateJobConfig') &&
       hasFunction(api.agents, 'runScreening') &&
       hasFunction(api.agents, 'runMultiAgentScreening') &&
@@ -213,6 +226,10 @@ function createFilenameAliasId() {
   return `alias-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+function cloneJobConfig(config: JobAgentConfig): JobAgentConfig {
+  return structuredClone(config)
+}
+
 function App() {
   const [activeStep, setActiveStep] = useState<StepId>('settings')
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false)
@@ -226,6 +243,11 @@ function App() {
   const [isFetchingModels, setIsFetchingModels] = useState(false)
   const [jdText, setJdText] = useState('')
   const [jobSourceName, setJobSourceName] = useState<string | undefined>()
+  const [jobSalary, setJobSalary] = useState('')
+  const [jobMeta, setJobMeta] = useState('')
+  const [savedJobs, setSavedJobs] = useState<SavedJobRecord[]>([])
+  const [jobEditorMode, setJobEditorMode] = useState<JobEditorMode>('empty')
+  const [editingJobId, setEditingJobId] = useState<string | null>(null)
   const [jobConfigs, setJobConfigs] = useState<JobAgentConfig[]>([])
   const [resumes, setResumes] = useState<ImportedResumeSummary[]>([])
   const [batchResult, setBatchResult] = useState<ScreeningBatchResult | null>(null)
@@ -259,11 +281,14 @@ function App() {
     for (const preset of companyJobPresets) {
       byId.set(preset.config.id, preset.config)
     }
+    for (const savedJob of savedJobs) {
+      byId.set(savedJob.config.id, savedJob.config)
+    }
     for (const config of jobConfigs) {
       byId.set(config.id, config)
     }
     return [...byId.values()]
-  }, [jobConfigs])
+  }, [jobConfigs, savedJobs])
 
   useEffect(() => {
     desktopApi?.settings.hasApiKey().then(setApiKeyConfigured).catch(() => setApiKeyConfigured(false))
@@ -297,6 +322,10 @@ function App() {
         setResumes((current) => current.filter((resume) => resume.sessionId !== event.sessionId))
       }
     })
+  }, [desktopApi])
+
+  useEffect(() => {
+    desktopApi?.jobs.list().then(setSavedJobs).catch(() => undefined)
   }, [desktopApi])
 
   function notify(tone: Toast['tone'], message: string) {
@@ -371,6 +400,9 @@ function App() {
         '前端工程师\n负责 React TypeScript 桌面端产品开发，要求熟悉组件化、性能优化和跨团队沟通。Electron 经验加分。'
       setJdText(sample)
       setJobSourceName('示例岗位.txt')
+      setJobEditorMode('new')
+      setEditingJobId(null)
+      setJobConfigs([])
       notify('info', '当前是浏览器预览模式，已填入示例 JD')
       return
     }
@@ -378,46 +410,228 @@ function App() {
     if (parsed) {
       setJdText(parsed.text)
       setJobSourceName(parsed.fileName)
+      setJobEditorMode('new')
+      setEditingJobId(null)
       setJobConfigs([])
       notify('success', `已导入 ${parsed.fileName}`)
     }
   }
 
-  async function generateConfig() {
-    const trimmedJd = jdText.trim()
+  function startNewJobDraft() {
+    setJobEditorMode('new')
+    setEditingJobId(null)
+    setJdText('')
+    setJobSourceName(undefined)
+    setJobSalary('')
+    setJobMeta('')
+    setJobConfigs([])
+  }
 
-    // 预设是手工调好的完整配置，本身就是岗位 Agent，不需要再用 LLM 生成。
-    // 已选岗位且当前 JD 属于某个预设（或为空）时，直接进入下一步，
-    // 避免单个生成结果覆盖掉其它已选的岗位 Agent。
-    const jdBelongsToPreset = companyJobPresets.some((preset) => preset.jdText.trim() === trimmedJd)
-    if (jobConfigs.length > 0 && (trimmedJd === '' || jdBelongsToPreset)) {
-      setActiveStep('resumes')
-      notify('success', `已就绪 ${jobConfigs.length} 个岗位 Agent`)
+  function upsertActiveJobConfig(config: JobAgentConfig) {
+    setJobConfigs((current) => [config, ...current.filter((item) => item.id !== config.id)])
+  }
+
+  function clearJobEditorDraft() {
+    setJobEditorMode('empty')
+    setEditingJobId(null)
+    setJdText('')
+    setJobSourceName(undefined)
+    setJobSalary('')
+    setJobMeta('')
+  }
+
+  function restoreEditorForConfig(config: JobAgentConfig) {
+    const savedJob = savedJobs.find((job) => job.config.id === config.id || job.id === config.id)
+    if (savedJob) {
+      setJobEditorMode('saved')
+      setEditingJobId(savedJob.id)
+      setJdText(savedJob.jdText)
+      setJobSourceName(savedJob.sourceFileName ?? `${savedJob.config.title}.txt`)
+      setJobSalary(savedJob.salary)
+      setJobMeta(savedJob.meta)
       return
     }
+
+    const preset = companyJobPresets.find((item) => item.config.id === config.id)
+    if (preset) {
+      setJobEditorMode('preset')
+      setEditingJobId(preset.config.id)
+      setJdText(preset.jdText)
+      setJobSourceName(`${preset.title} 预设`)
+      setJobSalary(preset.salary)
+      setJobMeta(preset.meta)
+      return
+    }
+
+    setJobEditorMode('new')
+    setEditingJobId(null)
+    setJdText('')
+    setJobSourceName(undefined)
+    setJobSalary('')
+    setJobMeta('')
+  }
+
+  function closeActiveJobConfig(configId: string, title: string) {
+    const remainingConfigs = jobConfigs.filter((config) => config.id !== configId)
+    setJobConfigs(remainingConfigs)
+    if (remainingConfigs[0]) {
+      restoreEditorForConfig(remainingConfigs[0])
+    } else {
+      clearJobEditorDraft()
+    }
+    notify('info', `已关闭 ${title}`)
+  }
+
+  function selectSavedJob(job: SavedJobRecord) {
+    if (jobEditorMode === 'saved' && editingJobId === job.id) {
+      closeActiveJobConfig(job.config.id, job.title)
+      return
+    }
+    setJobEditorMode('saved')
+    setEditingJobId(job.id)
+    setJdText(job.jdText)
+    setJobSourceName(job.sourceFileName ?? `${job.config.title}.txt`)
+    setJobSalary(job.salary)
+    setJobMeta(job.meta)
+    upsertActiveJobConfig(cloneJobConfig(job.config))
+    notify('success', `已打开 ${job.title}`)
+  }
+
+  function editPresetJob(presetId: string) {
+    const preset = companyJobPresets.find((item) => item.id === presetId)
+    if (!preset) return
+    if (jobEditorMode === 'preset' && editingJobId === preset.config.id) {
+      closeActiveJobConfig(preset.config.id, preset.title)
+      return
+    }
+    setJobEditorMode('preset')
+    setEditingJobId(preset.config.id)
+    setJdText(preset.jdText)
+    setJobSourceName(`${preset.title} 预设`)
+    setJobSalary(preset.salary)
+    setJobMeta(preset.meta)
+    upsertActiveJobConfig(cloneJobConfig(preset.config))
+    notify('success', `已打开 ${preset.title}`)
+  }
+
+  function getCurrentEditableRecord() {
+    if (jobEditorMode === 'saved' && editingJobId) {
+      return savedJobs.find((job) => job.id === editingJobId)
+    }
+    return undefined
+  }
+
+  async function saveJobRecord(config: JobAgentConfig, options: { existingId?: string } = {}) {
+    const input = {
+      id: options.existingId,
+      title: config.title,
+      salary: jobSalary,
+      meta: jobMeta,
+      jdText,
+      sourceFileName: jobSourceName,
+      config,
+    }
+    if (!desktopApi) {
+      const now = new Date().toISOString()
+      return {
+        id: input.id ?? config.id,
+        title: config.title,
+        salary: jobSalary,
+        meta: jobMeta,
+        jdText,
+        sourceFileName: jobSourceName,
+        config: { ...config, id: input.id ?? config.id },
+        createdAt: now,
+        updatedAt: now,
+      } satisfies SavedJobRecord
+    }
+    return desktopApi.jobs.save(input)
+  }
+
+  async function generateConfig() {
+    const trimmedJd = jdText.trim()
 
     if (!trimmedJd) {
       notify('error', '请先导入或粘贴岗位描述')
       return
     }
+    if (desktopApi && !apiKeyConfigured) {
+      notify('error', '请先配置 API key，再使用 AI 编辑岗位')
+      return
+    }
     setBusyTask('job')
     try {
+      const currentRecord = getCurrentEditableRecord()
+      const currentConfig = currentRecord?.config
       const config =
         desktopApi && apiKeyConfigured
           ? await desktopApi.agents.generateJobConfig({
               jdText,
               sourceFileName: jobSourceName,
               model,
+              currentConfig,
             })
           : createFallbackJobConfig(jdText, jobSourceName)
-      // 追加而非替换：保留其它已选岗位 Agent，按 id 去重
-      setJobConfigs((current) => [...current.filter((item) => item.id !== config.id), config])
-      setActiveStep('resumes')
-      notify('success', '岗位 agent 配置已生成，可继续编辑')
+
+      const existingId = jobEditorMode === 'saved' && editingJobId ? editingJobId : undefined
+      const savedJob = await saveJobRecord(config, { existingId })
+      setSavedJobs((current) => [savedJob, ...current.filter((item) => item.id !== savedJob.id)])
+      setJobEditorMode('saved')
+      setEditingJobId(savedJob.id)
+      setJobSalary(savedJob.salary)
+      setJobMeta(savedJob.meta)
+      setJobSourceName(savedJob.sourceFileName)
+      upsertActiveJobConfig(savedJob.config)
+      notify('success', '岗位已保存到本机岗位库')
     } catch (error) {
       notify('error', error instanceof Error ? error.message : '岗位 agent 生成失败')
     } finally {
       setBusyTask(null)
+    }
+  }
+
+  async function saveCurrentJob() {
+    if (!jobConfig) {
+      notify('error', '请先生成或选择岗位 Agent 配置')
+      return
+    }
+    if (!jdText.trim()) {
+      notify('error', '请先填写岗位 JD')
+      return
+    }
+    try {
+      const existingId = jobEditorMode === 'saved' && editingJobId ? editingJobId : undefined
+      const savedJob = await saveJobRecord(jobConfig, { existingId })
+      setSavedJobs((current) => [savedJob, ...current.filter((item) => item.id !== savedJob.id)])
+      setJobEditorMode('saved')
+      setEditingJobId(savedJob.id)
+      upsertActiveJobConfig(savedJob.config)
+      notify('success', '岗位已保存到本机岗位库')
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : '岗位保存失败')
+    }
+  }
+
+  async function deleteCurrentJob() {
+    if (jobEditorMode !== 'saved' || !editingJobId) {
+      notify('info', '系统模板不能删除')
+      return
+    }
+    try {
+      if (desktopApi) {
+        await desktopApi.jobs.delete(editingJobId)
+      }
+      setSavedJobs((current) => current.filter((job) => job.id !== editingJobId))
+      setJobConfigs((current) => current.filter((config) => config.id !== editingJobId))
+      setJobEditorMode('empty')
+      setEditingJobId(null)
+      setJdText('')
+      setJobSourceName(undefined)
+      setJobSalary('')
+      setJobMeta('')
+      notify('success', '岗位已删除')
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : '岗位删除失败')
     }
   }
 
@@ -574,6 +788,9 @@ function App() {
     if (!jobConfig) {
       return
     }
+    if (field === 'title') {
+      setJobSourceName((current) => current ?? `${value}.txt`)
+    }
     setJobConfigs((current) => {
       const updated = structuredClone(current)
       if (!updated[0]) return current
@@ -595,41 +812,6 @@ function App() {
       }
       return updated
     })
-  }
-
-  function toggleJobPreset(presetId: string) {
-    const preset = companyJobPresets.find((item) => item.id === presetId)
-    if (!preset) return
-
-    // 用当前 closure 的 jobConfigs 计算新状态（用于 side effects）
-    const alreadySelected = jobConfigs.some((c) => c.id === preset.config.id)
-    const newConfigs = alreadySelected
-      ? jobConfigs.filter((c) => c.id !== preset.config.id)
-      : [...jobConfigs, structuredClone(preset.config)]
-
-    // functional update 确保写入最新状态，避免 stale closure 导致丢失并发选择
-    setJobConfigs((current) => {
-      const inCurrent = current.some((c) => c.id === preset.config.id)
-      return inCurrent
-        ? current.filter((c) => c.id !== preset.config.id)
-        : [...current, structuredClone(preset.config)]
-    })
-
-    // 单岗位时同步显示对应 JD 文本；多岗位时只更新标题
-    if (newConfigs.length === 1) {
-      const singlePreset = companyJobPresets.find((p) => p.config.id === newConfigs[0].id)
-      if (singlePreset) {
-        setJdText(singlePreset.jdText)
-        setJobSourceName(`${singlePreset.title} 预设`)
-      }
-    } else if (newConfigs.length === 0) {
-      setJdText('')
-      setJobSourceName(undefined)
-    } else {
-      setJobSourceName(`已选 ${newConfigs.length} 个岗位`)
-    }
-
-    notify('success', `已${alreadySelected ? '取消' : '选择'} ${preset.title}`)
   }
 
   function updateScreeningProgress(event: ScreeningProgressEvent) {
@@ -822,6 +1004,13 @@ function App() {
           ? `已发起 ${screeningProgress.started} / ${screeningProgress.total}，等待返回 ${screeningProgress.active} 份`
           : `已完成 ${screeningProgress.completed} / ${screeningProgress.total}`
       : null
+  const jobActionLabel = isGeneratingJob
+    ? '生成中...'
+    : jobEditorMode === 'saved'
+      ? 'AI 更新并保存'
+      : jobEditorMode === 'preset'
+        ? 'AI 生成并另存'
+        : 'AI 生成并新增'
 
   return (
     <main className="shell">
@@ -851,6 +1040,10 @@ function App() {
         <div className="privacy-note">
           <span>隐私模式</span>
           <p>不保存筛选历史。解析文本仅在当前会话中使用，关闭应用后清空。</p>
+        </div>
+        <div className="version-badge" aria-label="应用版本号">
+          <span>版本</span>
+          <strong>{`v${__APP_VERSION__}`}</strong>
         </div>
       </aside>
 
@@ -1021,13 +1214,51 @@ function App() {
               <div className="section-heading">
                 <div>
                   <p className="section-kicker">Job Agent</p>
-                  <h2>岗位描述</h2>
+                  <h2>岗位库</h2>
                 </div>
-                <button type="button" onClick={importJobFile}>
-                  导入 JD 文件
-                </button>
+                <div className="button-row">
+                  <button type="button" onClick={startNewJobDraft}>
+                    新增岗位
+                  </button>
+                  <button type="button" onClick={importJobFile}>
+                    导入 JD 文件
+                  </button>
+                </div>
               </div>
-              <div className="preset-strip" aria-label="公司岗位预设">
+              <div className="job-library-section">
+                <div className="job-library-header">
+                  <span>自定义岗位</span>
+                  <em>{savedJobs.length} 个</em>
+                </div>
+                <div className="preset-strip job-library-list" aria-label="自定义岗位库">
+                  {savedJobs.map((job) => {
+                    const isSelected = jobConfigs.some((config) => config.id === job.config.id)
+                    const isEditing = jobEditorMode === 'saved' && editingJobId === job.id
+                    return (
+                      <button
+                        key={job.id}
+                        type="button"
+                        className={isSelected || isEditing ? 'preset-selected' : ''}
+                        aria-label={`编辑 ${job.title}`}
+                        onClick={() => selectSavedJob(job)}
+                      >
+                        <strong>{job.title}</strong>
+                        <span>{[job.salary, job.meta].filter(Boolean).join(' · ') || '自定义岗位'}</span>
+                        {isSelected && <span className="preset-check">✓</span>}
+                      </button>
+                    )
+                  })}
+                  {savedJobs.length === 0 && (
+                    <div className="empty-state compact-empty">还没有自定义岗位。导入或粘贴 JD 后可一键保存。</div>
+                  )}
+                </div>
+              </div>
+              <div className="job-library-section">
+                <div className="job-library-header">
+                  <span>系统模板</span>
+                  <em>{companyJobPresets.length} 个</em>
+                </div>
+                <div className="preset-strip" aria-label="公司岗位预设">
                 {companyJobPresets.map((preset) => {
                   const isSelected = jobConfigs.some((c) => c.id === preset.config.id)
                   return (
@@ -1035,7 +1266,8 @@ function App() {
                       key={preset.id}
                       type="button"
                       className={isSelected ? 'preset-selected' : ''}
-                      onClick={() => toggleJobPreset(preset.id)}
+                      aria-label={`编辑 ${preset.title}`}
+                      onClick={() => editPresetJob(preset.id)}
                     >
                       <strong>{preset.title}</strong>
                       <span>{preset.salary} · {preset.meta}</span>
@@ -1043,17 +1275,52 @@ function App() {
                     </button>
                   )
                 })}
+                </div>
               </div>
+              <label className="config-field" htmlFor="job-salary-input">
+                <span>薪资</span>
+                <input
+                  id="job-salary-input"
+                  value={jobSalary}
+                  onChange={(event) => setJobSalary(event.target.value)}
+                  placeholder="例如 10-20K"
+                />
+              </label>
+              <label className="config-field" htmlFor="job-meta-input">
+                <span>岗位信息</span>
+                <input
+                  id="job-meta-input"
+                  value={jobMeta}
+                  onChange={(event) => setJobMeta(event.target.value)}
+                  placeholder="例如 1-3年 / 本科 / 深圳"
+                />
+              </label>
               <textarea
                 value={jdText}
                 onChange={(event) => {
                   setJdText(event.target.value)
+                  if (jobEditorMode === 'empty') {
+                    setJobEditorMode('new')
+                  }
                 }}
                 placeholder="粘贴岗位描述，或导入 PDF / DOCX / TXT 文件"
               />
-              <button type="button" className="primary wide" disabled={isBusy} onClick={generateConfig}>
-                {isGeneratingJob ? '生成中...' : '生成岗位 Agent 配置'}
-              </button>
+              <div className="button-row job-action-row">
+                <button type="button" className="primary" disabled={isBusy} onClick={generateConfig}>
+                  {jobActionLabel}
+                </button>
+                <button type="button" disabled={isBusy || !jobConfig} onClick={saveCurrentJob}>
+                  手动保存
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={isBusy || jobEditorMode !== 'saved'}
+                  onClick={deleteCurrentJob}
+                >
+                  删除岗位
+                </button>
+              </div>
             </div>
             <div className="config-column">
               <div className="section-heading">

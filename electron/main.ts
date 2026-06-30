@@ -16,6 +16,7 @@ import {
 } from './fileService.js'
 import { exportCsv, exportXlsx } from './exportService.js'
 import { fetchModelIds } from './modelService.js'
+import { closeJobLibraryStore, deleteSavedJob, listSavedJobs, saveSavedJob } from './jobLibraryStore.js'
 import { getSettings, saveSettings } from './settingsStore.js'
 import { defaultScreeningConcurrency, runMultiAgentBatch, runScreeningBatch } from '../src/core/screeningEngine.js'
 import type { ImportedResumeSummary, JobAgentConfig, ResumeDocument, ResumeScreeningInput } from '../src/shared/types.js'
@@ -127,10 +128,16 @@ function registerIpcHandlers() {
   ipcMain.handle(channels.cancelResumeImport, (_event, sessionId: string) => cancelResumeImport(sessionId))
   ipcMain.handle(channels.clearResumeImportCache, (_event, sessionIds: string[]) => clearResumeImportCache(sessionIds))
   ipcMain.handle(channels.loadCachedResumes, (_event, resumes: ResumeScreeningInput[]) => resolveResumeDocuments(resumes))
+  ipcMain.handle(channels.listJobs, () => listSavedJobs())
+  ipcMain.handle(channels.saveJob, (_event, input) => saveSavedJob(input))
+  ipcMain.handle(channels.deleteJob, (_event, id: string) => deleteSavedJob(id))
   ipcMain.handle(channels.cancelScreening, (event) => cancelScreeningRun(event.sender.id))
   ipcMain.handle(
     channels.generateJobConfig,
-    async (_event, payload: { jdText: string; sourceFileName?: string; model: string }) => {
+    async (
+      _event,
+      payload: { jdText: string; sourceFileName?: string; model: string; currentConfig?: JobAgentConfig },
+    ) => {
       const { generateJobAgentConfig } = await loadOpenAIAgents()
       return generateJobAgentConfig(payload, {
         apiKey: await getApiKey(),
@@ -229,6 +236,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   void cleanupAllResumeImportCaches()
+  closeJobLibraryStore()
 })
 
 app.on('activate', () => {

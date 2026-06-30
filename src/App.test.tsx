@@ -9,6 +9,8 @@ import type {
   ImportedResumeSummary,
   ResumeDocument,
   ResumeImportProgressEvent,
+  SavedJobRecord,
+  JobAgentConfig,
   ScreeningBatchResult,
   ScreeningProgressEvent,
 } from './shared/types.js'
@@ -22,6 +24,7 @@ describe('App smoke flow', () => {
   type DesktopApiMockOverrides = {
     settings?: Partial<DesktopApi['settings']>
     files?: Partial<DesktopApi['files']>
+    jobs?: Partial<DesktopApi['jobs']>
     agents?: Partial<DesktopApi['agents']>
     export?: Partial<DesktopApi['export']>
   }
@@ -55,6 +58,33 @@ describe('App smoke flow', () => {
     }
   }
 
+  const generatedJobConfig: JobAgentConfig = {
+    id: 'generated-job',
+    title: '生成岗位',
+    summary: '生成岗位摘要',
+    mustHaves: ['核心要求'],
+    niceToHaves: [],
+    riskFlags: [],
+    criteria: [{ id: 'core', label: '核心匹配', weight: 100, description: '核心能力' }],
+    instructions: '只看证据',
+    thresholds: { strongYes: 85, yes: 75, maybe: 60 },
+  }
+
+  function toSavedJob(config: JobAgentConfig, patch: Partial<SavedJobRecord> = {}): SavedJobRecord {
+    return {
+      id: config.id,
+      title: config.title,
+      salary: '10-20K',
+      meta: '1-3年 / 本科 / 深圳',
+      jdText: `${config.title} JD`,
+      sourceFileName: `${config.title}.txt`,
+      config,
+      createdAt: '2026-06-30T00:00:00.000Z',
+      updatedAt: '2026-06-30T00:00:00.000Z',
+      ...patch,
+    }
+  }
+
   function createDesktopApiMock(overrides: DesktopApiMockOverrides = {}): DesktopApi {
     return {
       settings: {
@@ -84,6 +114,21 @@ describe('App smoke flow', () => {
         ),
         ...overrides.files,
       },
+      jobs: {
+        list: vi.fn().mockResolvedValue([]),
+        save: vi.fn().mockImplementation(async (input) =>
+          toSavedJob(input.config, {
+            id: input.id ?? input.config.id,
+            title: input.title ?? input.config.title,
+            salary: input.salary ?? '',
+            meta: input.meta ?? '',
+            jdText: input.jdText,
+            sourceFileName: input.sourceFileName,
+          }),
+        ),
+        delete: vi.fn().mockResolvedValue(true),
+        ...overrides.jobs,
+      },
       agents: {
         generateJobConfig: vi.fn(),
         runScreening: vi.fn(),
@@ -106,6 +151,7 @@ describe('App smoke flow', () => {
     render(<App />)
 
     expect(screen.getByRole('heading', { name: '为每个岗位生成一个专属筛选 agent' })).toBeInTheDocument()
+    expect(screen.getByLabelText('应用版本号')).toHaveTextContent('v0.3.1')
     expect(screen.getByText('桥接未加载')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '获取模型' }))
@@ -126,6 +172,185 @@ describe('App smoke flow', () => {
     expect(screen.queryByText('张三-前端.txt')).not.toBeInTheDocument()
     expect(screen.queryByText('李四-后端.txt')).not.toBeInTheDocument()
     expect(screen.getByText('桌面端桥接未加载，请重启应用或重新构建')).toBeInTheDocument()
+  })
+
+  it('loads saved jobs and uses AI to save an imported JD as a new custom job', async () => {
+    const user = userEvent.setup()
+    const saveJob = vi.fn().mockImplementation(async (input) =>
+      toSavedJob(input.config, {
+        id: input.config.id,
+        title: input.config.title,
+        jdText: input.jdText,
+        sourceFileName: input.sourceFileName,
+      }),
+    )
+    window.desktopApi = createDesktopApiMock({
+      settings: {
+        hasApiKey: vi.fn().mockResolvedValue(true),
+      },
+      files: {
+        pickJobFile: vi.fn().mockResolvedValue({
+          fileName: '运营经理.txt',
+          extension: '.txt',
+          text: '运营经理 JD',
+          wordCount: 2,
+        }),
+      },
+      jobs: {
+        save: saveJob,
+      },
+      agents: {
+        generateJobConfig: vi.fn().mockResolvedValue(generatedJobConfig),
+      },
+    })
+
+    render(<App />)
+    await waitFor(() => expect(window.desktopApi!.jobs.list).toHaveBeenCalled())
+
+    await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+    expect(screen.getByRole('heading', { name: '岗位库' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '新增岗位' }))
+    await user.click(screen.getByRole('button', { name: '导入 JD 文件' }))
+    await user.click(screen.getByRole('button', { name: 'AI 生成并新增' }))
+
+    expect(window.desktopApi.agents.generateJobConfig).toHaveBeenCalledWith({
+      jdText: '运营经理 JD',
+      sourceFileName: '运营经理.txt',
+      model: 'gpt-5.2',
+      currentConfig: undefined,
+    })
+    expect(saveJob).toHaveBeenCalledWith(expect.objectContaining({
+      jdText: '运营经理 JD',
+      sourceFileName: '运营经理.txt',
+      config: generatedJobConfig,
+    }))
+    expect(await screen.findByRole('button', { name: /编辑 生成岗位/ })).toBeInTheDocument()
+    expect(screen.getByText('岗位已保存到本机岗位库')).toBeInTheDocument()
+  })
+
+  it('sends the current custom job config when AI updates an existing saved job', async () => {
+    const user = userEvent.setup()
+    const savedJob = toSavedJob(generatedJobConfig, {
+      id: 'saved-job-1',
+      title: '自定义运营',
+      config: { ...generatedJobConfig, id: 'saved-job-1', title: '自定义运营' },
+      jdText: '旧 JD',
+    })
+    const updatedConfig = { ...savedJob.config, title: '自定义高级运营' }
+    window.desktopApi = createDesktopApiMock({
+      settings: {
+        hasApiKey: vi.fn().mockResolvedValue(true),
+      },
+      jobs: {
+        list: vi.fn().mockResolvedValue([savedJob]),
+        save: vi.fn().mockImplementation(async (input) =>
+          toSavedJob(input.config, {
+            id: input.id,
+            title: input.config.title,
+            jdText: input.jdText,
+          }),
+        ),
+      },
+      agents: {
+        generateJobConfig: vi.fn().mockResolvedValue(updatedConfig),
+      },
+    })
+
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+    await user.click(await screen.findByRole('button', { name: /编辑 自定义运营/ }))
+    await user.click(screen.getByRole('button', { name: 'AI 更新并保存' }))
+
+    expect(window.desktopApi.agents.generateJobConfig).toHaveBeenCalledWith({
+      jdText: '旧 JD',
+      sourceFileName: '生成岗位.txt',
+      model: 'gpt-5.2',
+      currentConfig: savedJob.config,
+    })
+    expect(window.desktopApi.jobs.save).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'saved-job-1',
+      config: updatedConfig,
+    }))
+  })
+
+  it('clears the active config when starting a new job draft', async () => {
+    const user = userEvent.setup()
+    const savedJob = toSavedJob(generatedJobConfig, {
+      id: 'saved-job-clear',
+      title: '已有岗位',
+      config: { ...generatedJobConfig, id: 'saved-job-clear', title: '已有岗位' },
+    })
+    window.desktopApi = createDesktopApiMock({
+      jobs: {
+        list: vi.fn().mockResolvedValue([savedJob]),
+      },
+    })
+
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+    await user.click(await screen.findByRole('button', { name: /编辑 已有岗位/ }))
+    expect(screen.getByLabelText('岗位名称')).toHaveValue('已有岗位')
+
+    await user.click(screen.getByRole('button', { name: '新增岗位' }))
+
+    expect(screen.getByRole('heading', { name: '尚未生成' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /02 岗位 Agent 待生成/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '手动保存' })).toBeDisabled()
+  })
+
+  it('closes a selected custom job when clicking it again', async () => {
+    const user = userEvent.setup()
+    const savedJob = toSavedJob(generatedJobConfig, {
+      id: 'saved-job-toggle',
+      title: '可关闭岗位',
+      config: { ...generatedJobConfig, id: 'saved-job-toggle', title: '可关闭岗位' },
+    })
+    window.desktopApi = createDesktopApiMock({
+      jobs: {
+        list: vi.fn().mockResolvedValue([savedJob]),
+      },
+    })
+
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+    const jobButton = await screen.findByRole('button', { name: /编辑 可关闭岗位/ })
+    await user.click(jobButton)
+    expect(screen.getByLabelText('岗位名称')).toHaveValue('可关闭岗位')
+    expect(screen.getByRole('button', { name: /02 岗位 Agent 1 个/ })).toBeInTheDocument()
+
+    await user.click(jobButton)
+
+    expect(screen.getByRole('heading', { name: '尚未生成' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /02 岗位 Agent 待生成/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '手动保存' })).toBeDisabled()
+  })
+
+  it('deletes custom jobs from the library and active agent selection', async () => {
+    const user = userEvent.setup()
+    const savedJob = toSavedJob(generatedJobConfig, {
+      id: 'saved-job-delete',
+      title: '待删除岗位',
+      config: { ...generatedJobConfig, id: 'saved-job-delete', title: '待删除岗位' },
+    })
+    window.desktopApi = createDesktopApiMock({
+      jobs: {
+        list: vi.fn().mockResolvedValue([savedJob]),
+      },
+    })
+
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+    await user.click(await screen.findByRole('button', { name: /编辑 待删除岗位/ }))
+    await user.click(screen.getByRole('button', { name: '删除岗位' }))
+
+    expect(window.desktopApi.jobs.delete).toHaveBeenCalledWith('saved-job-delete')
+    expect(await screen.findByText('岗位已删除')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /编辑 待删除岗位/ })).not.toBeInTheDocument()
   })
 
   it('saves routing optimization settings with filename aliases and LLM concurrency', async () => {
@@ -321,7 +546,7 @@ describe('App smoke flow', () => {
     expect(await screen.findByText('桌面端桥接正常')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
-    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ }))
     await user.click(screen.getByRole('button', { name: /简历导入/ }))
     await user.click(screen.getByRole('button', { name: '选择多份简历' }))
 
@@ -395,7 +620,7 @@ describe('App smoke flow', () => {
       expect(await screen.findByText('API key 已配置')).toBeInTheDocument()
 
       await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
-      await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+      await user.click(screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ }))
       await user.click(screen.getByRole('button', { name: /简历导入/ }))
       await user.click(screen.getByRole('button', { name: '选择多份简历' }))
       await user.click(screen.getByRole('button', { name: '开始筛选' }))
@@ -441,7 +666,7 @@ describe('App smoke flow', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
-    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ }))
     await user.click(screen.getByRole('button', { name: /简历导入/ }))
     await user.click(screen.getByRole('button', { name: '选择多份简历' }))
     await user.click(screen.getByRole('button', { name: '开始筛选' }))
@@ -479,7 +704,7 @@ describe('App smoke flow', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
-    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ }))
     await user.click(screen.getByRole('button', { name: /简历导入/ }))
     await user.click(screen.getByRole('button', { name: '选择多份简历' }))
     await user.click(screen.getByRole('button', { name: '开始筛选' }))
@@ -524,7 +749,7 @@ describe('App smoke flow', () => {
     expect(await screen.findByText('API key 已配置')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
-    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ }))
     await user.click(screen.getByRole('button', { name: /简历导入/ }))
     await user.click(screen.getByRole('button', { name: '选择多份简历' }))
     await user.click(screen.getByRole('button', { name: '开始筛选' }))
@@ -599,7 +824,7 @@ describe('App smoke flow', () => {
     expect(await screen.findByText('API key 已配置')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
-    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ }))
     await user.click(screen.getByRole('button', { name: /简历导入/ }))
     await user.click(screen.getByRole('button', { name: '选择多份简历' }))
     await user.click(screen.getByRole('button', { name: '开始筛选' }))
@@ -638,7 +863,7 @@ describe('App smoke flow', () => {
     await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
     const jdTextarea = screen.getByPlaceholderText('粘贴岗位描述，或导入 PDF / DOCX / TXT 文件')
     await user.type(jdTextarea, '资深前端工程师，负责 React 桌面端产品开发，需要性能优化经验。')
-    await user.click(screen.getByRole('button', { name: '生成岗位 Agent 配置' }))
+    await user.click(screen.getByRole('button', { name: 'AI 生成并新增' }))
 
     expect(await screen.findByRole('button', { name: /02 岗位 Agent 生成中/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /02 岗位 Agent 已生成/ })).not.toBeInTheDocument()
@@ -745,7 +970,7 @@ describe('App smoke flow', () => {
     await user.click(startScreeningButton)
 
     expect(screen.getByText('请先生成岗位 Agent，再开始筛选')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '岗位描述' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '岗位库' })).toBeInTheDocument()
   })
 
   it('shows and saves custom API base URL settings', async () => {
@@ -843,7 +1068,7 @@ describe('App smoke flow', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
-    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ }))
 
     const jdTextarea = screen.getByPlaceholderText('粘贴岗位描述，或导入 PDF / DOCX / TXT 文件') as HTMLTextAreaElement
     expect(jdTextarea.value).toContain('AI智能体搭建技术员')
@@ -861,23 +1086,52 @@ describe('App smoke flow', () => {
     expect(screen.getByRole('heading', { name: 'AI Agent 技术员' })).toBeInTheDocument()
   })
 
-  it('keeps every selected preset agent after clicking generate', async () => {
+  it('closes a selected preset job when clicking it again', async () => {
     const user = userEvent.setup()
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
+    const presetButton = screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ })
+    await user.click(presetButton)
+    expect(screen.getByLabelText('岗位名称')).toHaveValue('AI智能体搭建技术员')
+    expect(screen.getByRole('button', { name: /02 岗位 Agent 1 个/ })).toBeInTheDocument()
+
+    await user.click(presetButton)
+
+    expect(screen.getByRole('heading', { name: '尚未生成' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /02 岗位 Agent 待生成/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '手动保存' })).toBeDisabled()
+  })
+
+  it('keeps every selected preset agent after clicking generate', async () => {
+    const user = userEvent.setup()
+    window.desktopApi = createDesktopApiMock({
+      settings: {
+        hasApiKey: vi.fn().mockResolvedValue(true),
+      },
+      agents: {
+        generateJobConfig: vi.fn().mockResolvedValue({
+          ...generatedJobConfig,
+          id: 'saved-from-preset',
+          title: '另存岗位',
+        }),
+      },
+    })
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: /岗位 Agent/ }))
     // 选中多个公司预设岗位
-    await user.click(screen.getByRole('button', { name: /AI智能体搭建技术员/ }))
-    await user.click(screen.getByRole('button', { name: /产品经理人（运动护具向）/ }))
-    await user.click(screen.getByRole('button', { name: /品牌视觉设计/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 AI智能体搭建技术员/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 产品经理人（运动护具向）/ }))
+    await user.click(screen.getByRole('button', { name: /编辑 品牌视觉设计/ }))
 
     // 侧边栏应显示已选 3 个岗位
     expect(screen.getByRole('button', { name: /02 岗位 Agent 3 个/ })).toBeInTheDocument()
 
     // 点击"生成"不应把多个预设折叠成一个
-    await user.click(screen.getByRole('button', { name: '生成岗位 Agent 配置' }))
+    await user.click(screen.getByRole('button', { name: 'AI 生成并另存' }))
 
-    expect(screen.getByRole('button', { name: /02 岗位 Agent 3 个/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /02 岗位 Agent 4 个/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /02 岗位 Agent 1 个/ })).not.toBeInTheDocument()
   })
 })

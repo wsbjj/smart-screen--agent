@@ -30,6 +30,28 @@ export type JobAgentConfig = {
   }
 }
 
+export type SavedJobRecord = {
+  id: string
+  title: string
+  salary: string
+  meta: string
+  jdText: string
+  sourceFileName?: string
+  config: JobAgentConfig
+  createdAt: string
+  updatedAt: string
+}
+
+export type SaveJobInput = {
+  id?: string
+  title?: string
+  salary?: string
+  meta?: string
+  jdText: string
+  sourceFileName?: string
+  config: JobAgentConfig
+}
+
 export type RoutingMode = 'hybrid' | 'local_only'
 
 export type FilenameRouteAlias = {
@@ -161,6 +183,7 @@ export type ScreeningBatchOptions = {
 export type GeneratedJobConfigInput = {
   jdText: string
   sourceFileName?: string
+  currentConfig?: JobAgentConfig
 }
 
 export type RouterLayer = 'filename' | 'nlp' | 'llm' | 'fallback'

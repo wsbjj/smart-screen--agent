@@ -1,13 +1,22 @@
 {
   "name": "smart-screen--agent",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Desktop resume screening agent",
   "author": "wsbjj",
   "type": "module",
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && npm run electron:dev\"",
+    "postinstall": "npm run rebuild:native:electron",
+    "pretest": "npm run rebuild:native:node",
+    "preelectron:dev": "npm run rebuild:native:electron",
+    "prestart": "npm run rebuild:native:electron",
+    "prepackage": "npm run rebuild:native:electron",
+    "prepackage:win": "npm run rebuild:native:electron",
+    "prepackage:mac:arm64": "npm run rebuild:native:electron",
+    "rebuild:native:node": "npm rebuild better-sqlite3 keytar",
+    "rebuild:native:electron": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3 -w keytar",
     "electron:dev": "npm run build:electron && node scripts/electron-dev.mjs",
     "build": "tsc -b && vite build && npm run build:electron",
     "check:platform": "node scripts/check-cross-platform.mjs",
@@ -24,6 +33,7 @@
   },
   "dependencies": {
     "@openai/agents": "^0.11.6",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^17.4.2",
     "electron-store": "^11.0.2",
     "exceljs": "^4.4.0",
@@ -39,6 +49,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.13.2",
     "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19.2.14",
@@ -70,6 +81,10 @@
       "dist/**/*",
       "dist-electron/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/better-sqlite3/**"
     ],
     "mac": {
       "category": "public.app-category.productivity",
